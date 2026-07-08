@@ -143,6 +143,13 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [selectedTeacher, setSelectedTeacher] = useState<string | null>(null);
   const [selectedRooms, setSelectedRooms] = useState<string[]>([]);
   const [hiddenEntryIds, setHiddenEntryIds] = useState<string[]>([]);
+  const [activeRoom, setActiveRoom] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeRoom && store.suggestions.rooms.length > 0) {
+      setActiveRoom(store.suggestions.rooms[0]);
+    }
+  }, [store.suggestions.rooms, activeRoom]);
 
   const handleSelectedRoomsChange = useCallback((rooms: string[]) => {
     const allAvailableRooms = store.suggestions.rooms;
@@ -361,8 +368,19 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [store.entries, filterType, selectedStudentKey, selectedTeacher, selectedRooms]);
 
   const gridEntries = useMemo(() => {
-    return filteredEntries.filter((e) => !hiddenEntryIds.includes(e.id));
-  }, [filteredEntries, hiddenEntryIds]);
+    if (!activeRoom) return [];
+    return filteredEntries
+      .map((e) => {
+        const roomSchedules = e.schedules.filter((s) =>
+          s.rooms && s.rooms.some((r) => r.trim().toLowerCase() === activeRoom.trim().toLowerCase())
+        );
+        return {
+          ...e,
+          schedules: roomSchedules,
+        };
+      })
+      .filter((e) => e.schedules.length > 0 && !hiddenEntryIds.includes(e.id));
+  }, [filteredEntries, hiddenEntryIds, activeRoom]);
 
   const currentEntryIds = useMemo(() => {
     return new Set(gridEntries.map((e) => e.id));
@@ -571,7 +589,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     store.cancelEdit();
   }, [store]);
 
-  const handleDropEntry = useCallback((entryId: string, day: DayOfWeek, startMin: number) => {
+  const handleDropEntry = useCallback((entryId: string, day: DayOfWeek, startMin: number, room: string) => {
     const entry = store.entries.find((e) => e.id === entryId);
     if (!entry) return;
     const startStr = toTime(startMin);
@@ -581,30 +599,31 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       days: [day],
       startTime: startStr,
       endTime: endStr,
+      rooms: [room],
     };
 
-    let room = entry.room;
-    if (filterType === 'room') {
-      const activeRooms = selectedRooms.filter((r) => r !== 'all');
-      if (activeRooms.length > 0 && !entry.room) {
-        room = activeRooms[0];
-      }
-    }
+    const newSchedules = [...entry.schedules, newSched];
+    const newRooms = Array.from(new Set([
+      ...(entry.room ? entry.room.split(',').map((r) => r.trim()).filter(Boolean) : []),
+      room
+    ])).join(', ');
 
     store.updateEntry({
       ...entry,
-      schedules: [...entry.schedules, newSched],
-      room,
+      schedules: newSchedules,
+      room: newRooms,
     });
-  }, [store, filterType, selectedRooms]);
+  }, [store]);
 
-  const handleDeleteSchedule = useCallback((entryId: string, _scheduleId: string) => {
+  const handleDeleteSchedule = useCallback((entryId: string, scheduleId: string) => {
     const entry = store.entries.find((e) => e.id === entryId);
     if (!entry) return;
+    const updatedSchedules = entry.schedules.filter((s) => s.id !== scheduleId);
+    const updatedRooms = Array.from(new Set(updatedSchedules.flatMap((s) => s.rooms))).join(', ');
     const updated = {
       ...entry,
-      schedules: [],
-      room: '',
+      schedules: updatedSchedules,
+      room: updatedRooms,
     };
     store.updateEntry(updated);
   }, [store]);
@@ -651,6 +670,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         editingEntry: editingEntry,
         formState: store.formState,
         theme: store.theme,
+        dynamicData: store.dynamicData,
       });
     });
 
@@ -678,7 +698,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       unlistenStateChange.then((fn) => fn());
       unlistenClosed.then((fn) => fn());
     };
-  }, [store.suggestions, store.entries, store.importedSuggestions, editingEntry, store.formState, store.theme, handleFormSubmit]);
+  }, [store.suggestions, store.entries, store.importedSuggestions, editingEntry, store.formState, store.theme, store.dynamicData, handleFormSubmit]);
 
   // Export suggestions to JSON
   async function handleExportSuggestions() {
@@ -893,6 +913,9 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             store.cancelEdit();
             openSubjectFormWindow();
           }}
+          dynamicData={store.dynamicData}
+          addDynamicData={store.addDynamicData}
+          deleteDynamicData={store.deleteDynamicData}
         />
 
         {/* ── Main Workspace Body ───────────────────────────────────── */}
@@ -954,6 +977,9 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                 onDeleteEntry={store.deleteEntry}
                 onDropEntry={handleDropEntry}
                 onDeleteSchedule={handleDeleteSchedule}
+                activeRoom={activeRoom}
+                onActiveRoomChange={setActiveRoom}
+                roomOptions={store.suggestions.rooms}
               />
             </div>
           </div>

@@ -12,6 +12,8 @@ export interface Schedule {
   startTime: string;
   /** "HH:mm" 24-hour format */
   endTime: string;
+  /** Rooms assigned specifically for this schedule slot */
+  rooms: string[];
 }
 
 /** A complete subject entry with one or more schedules */
@@ -22,13 +24,14 @@ export interface SubjectEntry {
   subjectDescription: string;
   /** Teacher assigned to conduct the class */
   assignedTeacherName: string;
-  room: string;
+  room?: string;
   schedules: Schedule[];
   color?: string;
   program: string;
   programShorthand: string;
   year: number;
   section: string;
+  department?: string;
 }
 
 /** Describes a detected conflict between two scheduled entries */
@@ -61,6 +64,7 @@ export interface TimetableMeta {
 export interface FormSchedule {
   days: DayOfWeek[];
   timeRange: [string, string] | null; // HH:mm format
+  rooms: string[];
 }
 
 /** Form state structure for state history tracking */
@@ -71,7 +75,7 @@ export interface FormState {
   teacherLastName: string;
   teacherFirstName: string;
   teacherMiddleName: string;
-  room: string[];
+  room?: string[];
   colorRandom: boolean;
   color: string;
   schedules: FormSchedule[];
@@ -79,5 +83,6 @@ export interface FormState {
   programShorthand: string;
   year: string;
   section: string;
+  department?: string;
 }
 

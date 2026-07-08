@@ -46,6 +46,13 @@ function uniqueValues(
   return Array.from(seen).sort();
 }
 
+export interface DynamicData {
+  id: string;
+  dataType: string; // 'department' | 'program' | 'year' | 'section'
+  value: string;
+  displayAs: string;
+}
+
 export const DEFAULT_FORM_STATE: FormState = {
   subjectCode: '',
   offerCode: '',
@@ -56,11 +63,12 @@ export const DEFAULT_FORM_STATE: FormState = {
   room: [],
   colorRandom: true,
   color: '#2B4C7E',
-  schedules: [{ days: [], timeRange: null }],
+  schedules: [{ days: [], timeRange: null, rooms: [] }],
   program: '',
   programShorthand: '',
   year: '1',
   section: '',
+  department: '',
 };
 
 export interface TimetableStore {
@@ -121,6 +129,9 @@ export interface TimetableStore {
   startEdit: (id: string) => void;
   cancelEdit: () => void;
   updateFormState: (state: FormState) => void;
+  dynamicData: DynamicData[];
+  addDynamicData: (dataType: string, value: string, displayAs: string) => Promise<void>;
+  deleteDynamicData: (id: string) => Promise<void>;
 }
 
 /**
@@ -147,6 +158,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const [editingEntryId, setEditingEntryIdState] = useState<string | null>(null);
   const [formState, setFormStateState] = useState<FormState>(DEFAULT_FORM_STATE);
   const [isLoading, setIsLoading] = useState(true);
+  const [dynamicData, setDynamicData] = useState<DynamicData[]>([]);
 
   const lastSavedEntriesRef = useRef<string>('');
   const lastSavedHiddenDaysRef = useRef<string>('');
@@ -176,6 +188,38 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     }
   }, [timetableId]);
 
+  // Load dynamic data on mount
+  useEffect(() => {
+    getDb()
+      .then((db) => db.select<{ id: string; data_type: string; value: string; display_as: string }[]>('SELECT id, data_type, value, display_as FROM dynamic_data'))
+      .then((rows) => {
+        const mapped = rows.map((r) => ({
+          id: r.id,
+          dataType: r.data_type,
+          value: r.value,
+          displayAs: r.display_as,
+        }));
+        setDynamicData(mapped);
+      })
+      .catch((err) => console.error('Failed to load dynamic data:', err));
+  }, []);
+
+  const addDynamicData = useCallback(async (dataType: string, value: string, displayAs: string) => {
+    const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const db = await getDb();
+    await db.execute(
+      'INSERT INTO dynamic_data (id, data_type, value, display_as) VALUES ($1, $2, $3, $4)',
+      [id, dataType, value, displayAs]
+    );
+    setDynamicData((prev) => [...prev, { id, dataType, value, displayAs }]);
+  }, []);
+
+  const deleteDynamicData = useCallback(async (id: string) => {
+    const db = await getDb();
+    await db.execute('DELETE FROM dynamic_data WHERE id = $1', [id]);
+    setDynamicData((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
   // Load entries, hiddenDays, file_path, theme, and banded_rows from the database on mount
   useEffect(() => {
     if (!timetableId) return;
@@ -199,7 +243,13 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         setBandedRowsState(savedBanded);
         try {
           const parsed = JSON.parse(json);
-          const initialEntries = Array.isArray(parsed) ? parsed : [];
+          const initialEntries = (Array.isArray(parsed) ? parsed : []).map((e: any) => ({
+            ...e,
+            schedules: (e.schedules || []).map((s: any) => ({
+              ...s,
+              rooms: s.rooms || (e.room ? [e.room] : [])
+            }))
+          }));
           setEntries(initialEntries);
           lastSavedEntriesRef.current = JSON.stringify(initialEntries);
           setEditingEntryIdState(null);
@@ -360,15 +410,15 @@ export function useTimetableStore(timetableId: string): TimetableStore {
                   conflicts.push({ type: 'teacher', conflictingEntry: existing, ...info });
                 }
 
-                // Room conflict: same room, same time
-                if (candidate.room && existing.room) {
-                  const candRooms = candidate.room.split(',').map((r) => r.trim().toLowerCase()).filter(Boolean);
-                  const existRooms = existing.room.split(',').map((r) => r.trim().toLowerCase()).filter(Boolean);
-                  const hasOverlap = candRooms.some((r) => existRooms.includes(r));
-                  if (hasOverlap) {
-                    conflicts.push({ type: 'room', conflictingEntry: existing, ...info });
-                  }
-                }
+                 // Room conflict: same room at schedule level, same time
+                 const candRooms = cs.rooms || [];
+                 const existRooms = es.rooms || [];
+                 const hasRoomOverlap = candRooms.some((r) =>
+                   existRooms.some((er) => er.trim().toLowerCase() === r.trim().toLowerCase())
+                 );
+                 if (hasRoomOverlap) {
+                   conflicts.push({ type: 'room', conflictingEntry: existing, ...info });
+                 }
               }
             }
           }
@@ -631,7 +681,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         program: s.program || '',
         programShorthand: s.programShorthand || '',
         year: s.year || 1,
-        section: s.section || ''
+        section: s.section || '',
+        department: '',
       }))
     ];
     return {
@@ -647,6 +698,16 @@ export function useTimetableStore(timetableId: string): TimetableStore {
               const trimmed = r.trim();
               if (trimmed) seen.add(trimmed);
             });
+          }
+          if (entry.schedules) {
+            for (const s of entry.schedules) {
+              if (s.rooms) {
+                s.rooms.forEach((r) => {
+                  const trimmed = r.trim();
+                  if (trimmed) seen.add(trimmed);
+                });
+              }
+            }
           }
         }
         return Array.from(seen).sort();
@@ -675,11 +736,13 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         schedules: entry.schedules.map((s) => ({
           days: s.days,
           timeRange: [s.startTime, s.endTime],
+          rooms: s.rooms || (entry.room ? [entry.room] : []),
         })),
         program: entry.program || '',
         programShorthand: entry.programShorthand || '',
         year: entry.year ? String(entry.year) : '1',
         section: entry.section || '',
+        department: entry.department || '',
       };
 
       commitState(entries, id, newFormState);
@@ -762,5 +825,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     startEdit,
     cancelEdit,
     updateFormState,
+    dynamicData,
+    addDynamicData,
+    deleteDynamicData,
   };
 }

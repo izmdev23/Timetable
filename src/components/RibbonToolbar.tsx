@@ -1,4 +1,4 @@
-import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip } from 'antd';
+import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, List, Popconfirm } from 'antd';
 import {
   SaveOutlined,
   DownloadOutlined,
@@ -6,10 +6,13 @@ import {
   EyeOutlined,
   PlusOutlined,
   UndoOutlined,
-  RedoOutlined
+  RedoOutlined,
+  DeleteOutlined
 } from '@ant-design/icons';
 import type { DayOfWeek } from '../types';
 import { DAY_ORDER } from '../types';
+import { useState } from 'react';
+import type { DynamicData } from '../hooks/useTimetableStore';
 
 const { Text } = Typography;
 import { Tag } from 'antd';
@@ -56,6 +59,11 @@ interface RibbonToolbarProps {
 
   // App Actions
   onAddSubjectEntry: () => void;
+
+  // Dynamic Data Actions
+  dynamicData: DynamicData[];
+  addDynamicData: (dataType: string, value: string, displayAs: string) => Promise<void>;
+  deleteDynamicData: (id: string) => Promise<void>;
 }
 
 export function RibbonToolbar({
@@ -95,7 +103,18 @@ export function RibbonToolbar({
   timeOptions,
 
   onAddSubjectEntry,
+
+  dynamicData,
+  addDynamicData,
+  deleteDynamicData,
 }: RibbonToolbarProps) {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [form] = Form.useForm();
+
+  const handleFinishData = async (values: { dataType: string; value: string; displayAs: string }) => {
+    await addDynamicData(values.dataType, values.value.trim(), values.displayAs.trim());
+    form.resetFields();
+  };
   return (
     <div
       style={{
@@ -160,17 +179,26 @@ export function RibbonToolbar({
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
 
-      {/* Add Entry Action */}
+      {/* Add Entry & Dynamic Data Actions */}
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={onAddSubjectEntry}
-          style={{ background: '#2B4C7E', borderColor: '#2B4C7E', padding: '8px 12px', fontWeight: 500 }}
-        >
-          Add Subject
-        </Button>
-        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>INSERT</Text>
+        <Space size={3}>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={onAddSubjectEntry}
+            style={{ background: '#2B4C7E', borderColor: '#2B4C7E', padding: '8px 12px', fontWeight: 500 }}
+          >
+            Add Subject
+          </Button>
+          <Button
+            icon={<PlusOutlined />}
+            onClick={() => setDrawerOpen(true)}
+            style={{ padding: '8px 12px', fontWeight: 500 }}
+          >
+            Add Data
+          </Button>
+        </Space>
+        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>INSERT / CONFIG</Text>
       </div>
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
@@ -295,6 +323,87 @@ export function RibbonToolbar({
         </Space>
         <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>TIMETABLE WINDOW</Text>
       </div>
+
+      <Drawer
+        title="Manage Dynamic Toolbar Data"
+        placement="right"
+        width={380}
+        onClose={() => setDrawerOpen(false)}
+        open={drawerOpen}
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={handleFinishData}
+          initialValues={{ dataType: 'department' }}
+        >
+          <Form.Item
+            name="dataType"
+            label="Data Type"
+            rules={[{ required: true, message: 'Please select data type' }]}
+          >
+            <Select
+              options={[
+                { label: 'Department', value: 'department' },
+                { label: 'Program', value: 'program' },
+                { label: 'Year', value: 'year' },
+                { label: 'Section', value: 'section' },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            name="value"
+            label="Value (Internal)"
+            rules={[{ required: true, message: 'Please enter value' }]}
+          >
+            <Input placeholder="e.g. BSCS" />
+          </Form.Item>
+          <Form.Item
+            name="displayAs"
+            label="Display As"
+            rules={[{ required: true, message: 'Please enter display label' }]}
+          >
+            <Input placeholder="e.g. Bachelor of Science in Computer Science" />
+          </Form.Item>
+          <Form.Item>
+            <Button type="primary" htmlType="submit" block>
+              Add Entry
+            </Button>
+          </Form.Item>
+        </Form>
+
+        <Divider />
+        <Typography.Title level={5} style={{ fontSize: 13, marginBottom: 12 }}>
+          Existing Data Entries
+        </Typography.Title>
+        <List
+          size="small"
+          dataSource={dynamicData}
+          renderItem={(item) => (
+            <List.Item
+              actions={[
+                <Popconfirm
+                  title="Delete this data?"
+                  onConfirm={() => deleteDynamicData(item.id)}
+                  okText="Yes"
+                  cancelText="No"
+                >
+                  <Button type="text" danger size="small" icon={<DeleteOutlined />} />
+                </Popconfirm>
+              ]}
+            >
+              <List.Item.Meta
+                title={<span style={{ fontSize: 12, fontWeight: 600 }}>{item.displayAs}</span>}
+                description={
+                  <span style={{ fontSize: 11, color: '#8c8c8c' }}>
+                    Type: {item.dataType} | Value: {item.value}
+                  </span>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      </Drawer>
     </div>
   );
 }

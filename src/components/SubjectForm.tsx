@@ -54,6 +54,7 @@ interface SubjectFormProps {
   onCancelEdit?: () => void;
   formState: FormState;
   onFormStateChange: (state: FormState) => void;
+  dynamicData: Array<{ id: string; dataType: string; value: string; displayAs: string }>;
 }
 
 interface FormValues {
@@ -63,17 +64,19 @@ interface FormValues {
   teacherLastName: string;
   teacherFirstName: string;
   teacherMiddleName: string;
-  room: string | string[];
+  room?: string[];
   colorRandom: boolean;
   color: string;
   schedules: Array<{
     days: DayOfWeek[];
     timeRange: [dayjs.Dayjs, dayjs.Dayjs] | null;
+    rooms: string[];
   }>;
   program: string;
   programShorthand: string;
   year: string;
   section: string;
+  department: string;
 }
 
 const COLOR_PRESETS = [
@@ -114,6 +117,7 @@ export function SubjectForm({
   onCancelEdit,
   formState,
   onFormStateChange,
+  dynamicData,
 }: SubjectFormProps) {
   const [form] = Form.useForm<FormValues>();
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
@@ -150,23 +154,6 @@ export function SubjectForm({
     return Array.from(seen.values()).sort((a, b) => a.program.localeCompare(b.program));
   }, [entries]);
 
-  const programSuggestions = useMemo(
-    () => Array.from(new Set(programCombos.map((p) => p.program))).sort(),
-    [programCombos]
-  );
-
-  const programShorthandSuggestions = useMemo(
-    () => Array.from(new Set(programCombos.map((p) => p.programShorthand))).sort(),
-    [programCombos]
-  );
-
-  const yearSuggestions = useMemo(() => {
-    return Array.from(new Set(entries.map((e) => String(e.year)).filter(Boolean))).sort();
-  }, [entries]);
-
-  const sectionSuggestions = useMemo(() => {
-    return Array.from(new Set(entries.map((e) => e.section).filter(Boolean))).sort();
-  }, [entries]);
 
   // Populate form when formState from store changes
   useEffect(() => {
@@ -177,17 +164,18 @@ export function SubjectForm({
       teacherLastName: formState.teacherLastName,
       teacherFirstName: formState.teacherFirstName,
       teacherMiddleName: formState.teacherMiddleName,
-      room: formState.room,
       colorRandom: formState.colorRandom,
       color: formState.color,
-      schedules: formState.schedules.map((s) => ({
+      schedules: (formState.schedules || []).map((s) => ({
         days: s.days,
         timeRange: s.timeRange ? [dayjs(s.timeRange[0], 'HH:mm'), dayjs(s.timeRange[1], 'HH:mm')] : null,
+        rooms: s.rooms || [],
       })),
       program: formState.program,
       programShorthand: formState.programShorthand,
       year: formState.year,
       section: formState.section,
+      department: formState.department || '',
     };
     form.setFieldsValue(values);
     setConflicts([]);
@@ -210,13 +198,13 @@ export function SubjectForm({
         'teacherLastName',
         'teacherFirstName',
         'teacherMiddleName',
-        'room',
         'program',
         'programShorthand',
         'year',
         'section',
         'colorRandom',
         'color',
+        'department',
       ];
 
       for (const key of keys) {
@@ -254,7 +242,20 @@ export function SubjectForm({
         days: s.days,
         startTime: s.timeRange ? s.timeRange[0].format('HH:mm') : '',
         endTime: s.timeRange ? s.timeRange[1].format('HH:mm') : '',
+        rooms: s.rooms || [],
       }));
+
+    if (schedules.length > 0) {
+      for (const s of schedules) {
+        if (!s.rooms || s.rooms.length === 0) {
+          Modal.error({
+            title: 'Validation Error',
+            content: 'Each added schedule requires at least one room assigned to it.',
+          });
+          return;
+        }
+      }
+    }
 
     const lName = values.teacherLastName.trim();
     const fName = values.teacherFirstName.trim();
@@ -267,23 +268,15 @@ export function SubjectForm({
       offerCode: values.offerCode.trim(),
       subjectDescription: values.subjectDescription.trim(),
       assignedTeacherName: combinedTeacherName,
-      room: Array.isArray(values.room)
-        ? values.room.map((r) => r.trim()).filter(Boolean).join(', ')
-        : typeof values.room === 'string'
-        ? values.room.trim()
-        : '',
+      room: schedules.flatMap((s) => s.rooms).filter(Boolean).join(', '),
       color: values.colorRandom ? undefined : values.color,
       schedules,
-      program: values.program.trim(),
-      programShorthand: values.programShorthand.trim(),
+      program: values.program,
+      programShorthand: values.programShorthand,
       year: Number(values.year),
-      section: values.section.trim(),
+      section: values.section,
+      department: values.department,
     };
-
-    if (!entry.room) {
-      const proceed = window.confirm('Warning: This subject entry has no rooms assigned. Are you sure you want to proceed?');
-      if (!proceed) return;
-    }
 
     if (!editingEntry) {
       const isDuplicate = entries.some((existing) => {
@@ -292,11 +285,11 @@ export function SubjectForm({
           existing.offerCode.trim().toLowerCase() === entry.offerCode.toLowerCase() &&
           existing.subjectDescription.trim().toLowerCase() === entry.subjectDescription.toLowerCase() &&
           existing.assignedTeacherName.trim().toLowerCase() === entry.assignedTeacherName.toLowerCase() &&
-          existing.room.trim().toLowerCase() === entry.room.toLowerCase() &&
           existing.program.trim().toLowerCase() === entry.program.toLowerCase() &&
           existing.programShorthand.trim().toLowerCase() === entry.programShorthand.toLowerCase() &&
           existing.year === entry.year &&
-          existing.section.trim().toLowerCase() === entry.section.toLowerCase();
+          existing.section.trim().toLowerCase() === entry.section.toLowerCase() &&
+          (existing.department || '').trim().toLowerCase() === (entry.department || '').toLowerCase();
 
         if (!fieldsMatch) return false;
         if (existing.schedules.length !== entry.schedules.length) return false;
@@ -347,7 +340,7 @@ export function SubjectForm({
       teacherLastName: allValues.teacherLastName || '',
       teacherFirstName: allValues.teacherFirstName || '',
       teacherMiddleName: allValues.teacherMiddleName || '',
-      room: Array.isArray(allValues.room) ? allValues.room : [],
+      room: [],
       colorRandom: allValues.colorRandom ?? true,
       color: allValues.color || '#2B4C7E',
       schedules: (allValues.schedules || []).map((s) => ({
@@ -355,11 +348,13 @@ export function SubjectForm({
         timeRange: s.timeRange
           ? [s.timeRange[0].format('HH:mm'), s.timeRange[1].format('HH:mm')] as [string, string]
           : null,
+        rooms: s.rooms || [],
       })),
       program: allValues.program || '',
       programShorthand: allValues.programShorthand || '',
       year: allValues.year || '1',
       section: allValues.section || '',
+      department: allValues.department || '',
     };
     onFormStateChange(newFormState);
   }
@@ -424,31 +419,6 @@ export function SubjectForm({
     }
   }
 
-  function handleProgramSelect(value: string) {
-    const match = programCombos.find((p) => p.program === value);
-    if (match) {
-      const current = form.getFieldsValue();
-      const updated = {
-        ...current,
-        program: value,
-        programShorthand: match.programShorthand,
-      };
-      updateStoreFormState(updated);
-    }
-  }
-
-  function handleProgramShorthandSelect(value: string) {
-    const match = programCombos.find((p) => p.programShorthand === value);
-    if (match) {
-      const current = form.getFieldsValue();
-      const updated = {
-        ...current,
-        programShorthand: value,
-        program: match.program,
-      };
-      updateStoreFormState(updated);
-    }
-  }
 
   return (
     <Card
@@ -549,8 +519,9 @@ export function SubjectForm({
           </Col>
         </Row>
 
+
         <Row gutter={10}>
-          <Col span={8}>
+          <Col span={12}>
             <Form.Item
               name="subjectCode"
               label="Subject Code"
@@ -566,7 +537,7 @@ export function SubjectForm({
               />
             </Form.Item>
           </Col>
-          <Col span={8}>
+          <Col span={12}>
             <Form.Item
               name="offerCode"
               label="Offer Code"
@@ -578,21 +549,6 @@ export function SubjectForm({
                 filterOption={(input, option) =>
                   (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
                 }
-              />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item
-              name="room"
-              label="Room (optional)"
-              rules={[]}
-            >
-              <Select
-                mode="tags"
-                tokenSeparators={[',']}
-                style={{ width: '100%' }}
-                placeholder="e.g. Room 301, Room 302"
-                options={suggestions.rooms.map((r) => ({ label: r, value: r }))}
               />
             </Form.Item>
           </Col>
@@ -613,35 +569,39 @@ export function SubjectForm({
         </Form.Item>
 
         <Row gutter={10}>
-          <Col span={12}>
+          <Col span={8}>
+            <Form.Item
+              name="department"
+              label="Department"
+              rules={[{ required: true, message: 'Required' }]}
+            >
+              <Select
+                placeholder="Select Department"
+                options={dynamicData.filter((d) => d.dataType === 'department').map((d) => ({ label: d.displayAs, value: d.value }))}
+              />
+            </Form.Item>
+          </Col>
+          <Col span={8}>
             <Form.Item
               name="program"
               label="Program"
               rules={[{ required: true, message: 'Required' }]}
             >
-              <AutoComplete
-                options={toOptions(programSuggestions)}
-                placeholder="e.g. Computer Science"
-                onSelect={handleProgramSelect}
-                filterOption={(input, option) =>
-                  (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
-                }
+              <Select
+                placeholder="Select Program"
+                options={dynamicData.filter((d) => d.dataType === 'program').map((d) => ({ label: d.displayAs, value: d.value }))}
               />
             </Form.Item>
           </Col>
-          <Col span={12}>
+          <Col span={8}>
             <Form.Item
               name="programShorthand"
               label="Program Shorthand"
               rules={[{ required: true, message: 'Required' }]}
             >
-              <AutoComplete
-                options={toOptions(programShorthandSuggestions)}
-                placeholder="e.g. BSCS"
-                onSelect={handleProgramShorthandSelect}
-                filterOption={(input, option) =>
-                  (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
-                }
+              <Select
+                placeholder="Shorthand"
+                options={dynamicData.filter((d) => d.dataType === 'program').map((d) => ({ label: d.value, value: d.value }))}
               />
             </Form.Item>
           </Col>
@@ -654,12 +614,9 @@ export function SubjectForm({
               label="Year"
               rules={[{ required: true, message: 'Required' }]}
             >
-              <AutoComplete
-                options={toOptions(yearSuggestions)}
-                placeholder="e.g. 1"
-                filterOption={(input, option) =>
-                  (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
-                }
+              <Select
+                placeholder="Select Year"
+                options={dynamicData.filter((d) => d.dataType === 'year').map((d) => ({ label: d.displayAs, value: d.value }))}
               />
             </Form.Item>
           </Col>
@@ -669,12 +626,9 @@ export function SubjectForm({
               label="Section"
               rules={[{ required: true, message: 'Required' }]}
             >
-              <AutoComplete
-                options={toOptions(sectionSuggestions)}
-                placeholder="e.g. A"
-                filterOption={(input, option) =>
-                  (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
-                }
+              <Select
+                placeholder="Select Section"
+                options={dynamicData.filter((d) => d.dataType === 'section').map((d) => ({ label: d.displayAs, value: d.value }))}
               />
             </Form.Item>
           </Col>
@@ -710,7 +664,6 @@ export function SubjectForm({
           </Col>
         </Row>
 
-        {/* Schedules list */}
         <Divider style={{ margin: '8px 0', fontSize: 12 }}>Schedules</Divider>
 
         <Form.List
@@ -720,57 +673,81 @@ export function SubjectForm({
           {(fields, { add, remove }, { errors }) => (
             <>
               {fields.map(({ key, name }) => (
-                <Space key={key} align="end" style={{ display: 'flex', marginBottom: 6 }}>
-                  <Form.Item
-                    name={[name, 'days']}
-                    label="Days"
-                    rules={[{ required: true, message: 'Select at least one day' }]}
-                    style={{ marginBottom: 0, minWidth: 220 }}
-                  >
-                    <Select
-                      mode="multiple"
-                      placeholder="Select days"
-                      options={DAY_ORDER.map((d) => ({ label: d, value: d }))}
-                      maxTagCount={4}
-                    />
-                  </Form.Item>
-
-                  <Form.Item
-                    name={[name, 'timeRange']}
-                    label="Start – End"
-                    rules={[{ required: true, message: 'Set time range' }]}
-                    style={{ marginBottom: 0 }}
-                  >
-                    <TimePicker.RangePicker
-                      format="hh:mm A"
-                      use12Hours
-                      minuteStep={5}
-                      style={{ width: 185 }}
-                    />
-                  </Form.Item>
-
-                  {fields.length > 1 && (
-                    <Button
-                      type="text"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => remove(name)}
-                      style={{ marginBottom: 0 }}
-                    />
-                  )}
-                </Space>
+                <div key={key} style={{ border: '1px solid #E4E9F0', borderRadius: 4, padding: 8, marginBottom: 8, background: '#FAFAFA' }}>
+                  <Row gutter={8} align="middle">
+                    <Col span={10}>
+                      <Form.Item
+                        name={[name, 'days']}
+                        label="Days"
+                        rules={[{ required: true, message: 'Select days' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Select
+                          mode="multiple"
+                          placeholder="Select days"
+                          options={DAY_ORDER.map((d) => ({ label: d, value: d }))}
+                          maxTagCount={3}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col span={12}>
+                      <Form.Item
+                        name={[name, 'timeRange']}
+                        label="Time Range"
+                        rules={[{ required: true, message: 'Set time range' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <TimePicker.RangePicker
+                          format="hh:mm A"
+                          use12Hours
+                          minuteStep={5}
+                          style={{ width: '100%' }}
+                        />
+                      </Form.Item>
+                    </Col>
+                    <Col span={2} style={{ textAlign: 'right' }}>
+                      {fields.length > 1 && (
+                        <Button
+                          type="text"
+                          danger
+                          icon={<DeleteOutlined />}
+                          onClick={() => remove(name)}
+                        />
+                      )}
+                    </Col>
+                  </Row>
+                  <Row gutter={8} style={{ marginTop: 8 }}>
+                    <Col span={24}>
+                      <Form.Item
+                        name={[name, 'rooms']}
+                        label="Assign Rooms"
+                        rules={[{ required: true, message: 'Assign at least one room' }]}
+                        style={{ marginBottom: 0 }}
+                      >
+                        <Select
+                          mode="tags"
+                          tokenSeparators={[',']}
+                          placeholder="Assign multiple rooms (e.g. Rm 101, Rm 102)"
+                          options={suggestions.rooms.map((r) => ({ label: r, value: r }))}
+                          style={{ width: '100%' }}
+                        />
+                      </Form.Item>
+                    </Col>
+                  </Row>
+                </div>
               ))}
 
               <Form.ErrorList errors={errors} />
 
               <Button
                 type="dashed"
-                onClick={() => add({ days: [], timeRange: null })}
+                onClick={() => add({ days: [], timeRange: null, rooms: [] })}
                 icon={<PlusOutlined />}
                 size="small"
                 style={{ marginTop: 2, marginBottom: 8 }}
+                block
               >
-                Add Schedule
+                Add Schedule Slot
               </Button>
             </>
           )}

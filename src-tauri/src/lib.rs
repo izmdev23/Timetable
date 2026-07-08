@@ -43,6 +43,18 @@ const MIGRATION_V5: Migration = Migration {
     kind: MigrationKind::Up,
 };
 
+const MIGRATION_V6: Migration = Migration {
+    version: 6,
+    description: "create_dynamic_data_table",
+    sql: "CREATE TABLE IF NOT EXISTS dynamic_data (
+        id          TEXT PRIMARY KEY,
+        data_type   TEXT NOT NULL,
+        value       TEXT NOT NULL,
+        display_as  TEXT NOT NULL
+    );",
+    kind: MigrationKind::Up,
+};
+
 #[tauri::command]
 async fn save_file_bytes(path: String, bytes: Vec<u8>) -> Result<(), String> {
     tokio::fs::write(&path, bytes).await.map_err(|e| e.to_string())
@@ -82,6 +94,7 @@ pub fn run() {
                         MIGRATION_V3,
                         MIGRATION_V4,
                         MIGRATION_V5,
+                        MIGRATION_V6,
                     ],
                 )
                 .build(),

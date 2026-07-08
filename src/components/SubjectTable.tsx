@@ -4,7 +4,6 @@ import { useRef, memo, useState, useMemo } from 'react';
 import type { SubjectEntry } from '../types';
 import { colorForSubject } from '../theme';
 import { formatTeacherForDisplay } from '../utils/teacherName';
-import { formatTimeTo12Hr } from '../utils/time';
 
 interface SubjectTableProps {
   entries: SubjectEntry[];
@@ -164,7 +163,6 @@ export const SubjectTable = memo(function SubjectTable({
             const color = colorForSubject(entry.subjectCode, entry.color);
             const isHidden = hiddenEntryIds.includes(entry.id);
             const isEditing = editingEntryId === entry.id;
-            const isAssigned = assignedEntryIds.has(entry.id);
 
             return (
               <div
@@ -173,19 +171,11 @@ export const SubjectTable = memo(function SubjectTable({
                 ref={(el) => { cardRefs.current[entry.id] = el; }}
                 className="subject-card-item"
                 tabIndex={0}
-                draggable={!isAssigned}
+                draggable={true}
                 onDragStart={(e) => handleDragStart(e, entry.id)}
                 style={{
-                  background: isHidden
-                    ? '#F1F5F9'
-                    : (!entry.room
-                      ? '#FFFBEB'
-                      : '#FFFFFF'),
-                  border: isEditing
-                    ? '2px solid #3B82F6'
-                    : (!entry.room
-                      ? '1px dashed #D97706'
-                      : '1px solid #D0D7E3'),
+                  background: isHidden ? '#F1F5F9' : '#FFFFFF',
+                  border: isEditing ? '2px solid #3B82F6' : '1px solid #D0D7E3',
                   borderRadius: 6,
                   padding: isEditing ? '9px 11px' : '10px 12px',
                   display: 'flex',
@@ -195,10 +185,8 @@ export const SubjectTable = memo(function SubjectTable({
                   boxShadow: isEditing
                     ? '0 0 0 3px rgba(59, 130, 246, 0.35), 0 4px 12px rgba(0, 0, 0, 0.1)'
                     : '0 1px 2px rgba(0,0,0,0.05)',
-                  // Placed entries in timetable with rooms assigned will be transparent and darkened:
-                  opacity: isHidden ? 0.6 : (isAssigned && entry.room ? 0.45 : 1),
-                  filter: (isAssigned && entry.room) ? 'brightness(0.7) saturate(0.6)' : 'none',
-                  cursor: isAssigned ? 'default' : 'pointer',
+                  opacity: isHidden ? 0.6 : 1,
+                  cursor: 'grab',
                 }}
               >
                 {/* Top row: Subject Code, Offer Code, Actions */}
@@ -262,7 +250,7 @@ export const SubjectTable = memo(function SubjectTable({
                   <HighlightedText text={entry.subjectDescription} query={searchQuery} />
                 </div>
 
-                {/* Teacher & Room */}
+                {/* Teacher & Department */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#4A5B78' }}>
                   <div>
                     <span style={{ color: '#7A8BA8', marginRight: 4 }}>Teacher:</span>
@@ -270,16 +258,14 @@ export const SubjectTable = memo(function SubjectTable({
                       <HighlightedText text={formatTeacherForDisplay(entry.assignedTeacherName)} query={searchQuery} />
                     </span>
                   </div>
-                  <div>
-                    <span style={{ color: '#7A8BA8', marginRight: 4 }}>Room:</span>
-                    <span style={{ fontWeight: 600, color: entry.room ? '#1E3560' : '#D97706' }}>
-                      {entry.room ? (
-                        <HighlightedText text={entry.room} query={searchQuery} />
-                      ) : (
-                        <span style={{ fontStyle: 'italic' }}>Unassigned</span>
-                      )}
-                    </span>
-                  </div>
+                  {entry.department && (
+                    <div>
+                      <span style={{ color: '#7A8BA8', marginRight: 4 }}>Dept:</span>
+                      <span style={{ fontWeight: 500 }}>
+                        <HighlightedText text={entry.department} query={searchQuery} />
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Program/Year/Section */}
@@ -288,33 +274,6 @@ export const SubjectTable = memo(function SubjectTable({
                   <span>Yr: <HighlightedText text={String(entry.year)} query={searchQuery} /></span>
                   <span>Sec: <HighlightedText text={entry.section} query={searchQuery} /></span>
                 </div>
-
-                {/* Schedules list */}
-                {entry.schedules.length > 0 && (
-                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 2 }}>
-                    {entry.schedules.map((s) =>
-                      s.days.map((day) => (
-                        <Tag
-                          key={`${s.id}-${day}`}
-                          style={{
-                            fontSize: 10,
-                            padding: '1px 6px',
-                            margin: 0,
-                            borderRadius: 4,
-                            background: 'rgba(238,241,246,0.6)',
-                            borderColor: '#D0D7E3',
-                            color: '#4A5B78',
-                            fontWeight: 500,
-                          }}
-                        >
-                          <HighlightedText text={day} query={searchQuery} />{' '}
-                          <HighlightedText text={formatTimeTo12Hr(s.startTime)} query={searchQuery} />–
-                          <HighlightedText text={formatTimeTo12Hr(s.endTime)} query={searchQuery} />
-                        </Tag>
-                      ))
-                    )}
-                  </div>
-                )}
               </div>
             );
           })

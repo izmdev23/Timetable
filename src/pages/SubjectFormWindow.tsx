@@ -16,6 +16,7 @@ export function SubjectFormWindow() {
     editingEntry: SubjectEntry | null;
     formState: FormState;
     theme: string;
+    dynamicData: any[];
   } | null>(null);
 
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
@@ -66,8 +67,10 @@ export function SubjectFormWindow() {
     programShorthand: '',
     year: '',
     section: '',
+    department: '',
   };
   const theme = initData?.theme || 'blue';
+  const dynamicData = initData?.dynamicData || [];
 
   const handleFormSubmit = (entry: SubjectEntry) => {
     // Send form data back to main window for validation, conflict detection, and database storage
@@ -115,6 +118,7 @@ export function SubjectFormWindow() {
             onCancelEdit={handleCancel}
             formState={formState}
             onFormStateChange={(state) => emit('subject-form:state-change', state)}
+            dynamicData={dynamicData}
           />
         </Content>
       </Layout>

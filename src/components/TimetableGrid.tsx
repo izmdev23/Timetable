@@ -29,8 +29,11 @@ interface TimetableGridProps {
   onUpdateEntry?: (entry: SubjectEntry) => void;
   /** Called to delete an entry entirely */
   onDeleteEntry?: (id: string) => void;
-  onDropEntry?: (entryId: string, day: DayOfWeek, startMin: number) => void;
+  onDropEntry?: (entryId: string, day: DayOfWeek, startMin: number, room: string) => void;
   onDeleteSchedule?: (entryId: string, scheduleId: string) => void;
+  activeRoom: string | null;
+  onActiveRoomChange: (room: string) => void;
+  roomOptions: string[];
 }
 
 interface SlotEntry {
@@ -92,6 +95,9 @@ export const TimetableGrid = memo(function TimetableGrid({
   onDeleteEntry,
   onDropEntry,
   onDeleteSchedule,
+  activeRoom,
+  onActiveRoomChange,
+  roomOptions,
 }: TimetableGridProps) {
   // Listen for undo/redo events to scroll and highlight the affected schedule block
   useEffect(() => {
@@ -324,7 +330,6 @@ export const TimetableGrid = memo(function TimetableGrid({
   const slotEntries = useMemo(() => {
     const flat: SlotEntry[] = [];
     for (const entry of entries) {
-      if (!entry.room || entry.room.trim() === '') continue;
       for (const sched of entry.schedules) {
         for (const day of sched.days) {
           const s = toMin(sched.startTime);
@@ -357,11 +362,26 @@ export const TimetableGrid = memo(function TimetableGrid({
           flexWrap: 'wrap',
         }}
       >
-        {/* Day Visibility Toggles */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <Text strong style={{ fontSize: 12, color: '#1E3560' }}>
-            Show Days:
-          </Text>
+        {/* Room Timetable & Day Visibility Toggles */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Text strong style={{ fontSize: 12, color: '#1E3560' }}>
+              Room Timetable:
+            </Text>
+            <Select
+              size="small"
+              style={{ width: 140 }}
+              value={activeRoom}
+              onChange={onActiveRoomChange}
+              options={roomOptions.map((r) => ({ label: r, value: r }))}
+              placeholder="Select Room"
+            />
+          </div>
+          <Divider type="vertical" style={{ height: 20, borderColor: '#D0D7E3' }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Text strong style={{ fontSize: 12, color: '#1E3560' }}>
+              Show Days:
+            </Text>
           {DAY_ORDER.map((day) => {
             const isVisible = !hiddenDays.includes(day);
             return (
@@ -391,6 +411,7 @@ export const TimetableGrid = memo(function TimetableGrid({
             );
           })}
         </div>
+      </div>
 
         {/* Timespan filter dropdowns */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -533,11 +554,15 @@ export const TimetableGrid = memo(function TimetableGrid({
                       e.currentTarget.style.backgroundColor = 'transparent';
                       const entryId = e.dataTransfer.getData('text/plain');
                       if (!entryId) return;
+                      if (!activeRoom) {
+                        alert('Please select a Room Timetable first.');
+                        return;
+                      }
                       const rect = e.currentTarget.getBoundingClientRect();
                       const relativeY = e.clientY - rect.top;
                       const slotIndex = Math.floor(relativeY / ROW_HEIGHT);
                       const startMin = viewStart + slotIndex * SLOT_INTERVAL;
-                      onDropEntry?.(entryId, day, startMin);
+                      onDropEntry?.(entryId, day, startMin, activeRoom);
                     }}
                     style={{ position: 'relative', height: gridHeight + 20, transition: 'background-color 0.2s ease' }}
                   >

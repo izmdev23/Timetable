@@ -2,6 +2,7 @@ import { Modal } from 'antd';
 import { useState, useRef, useEffect } from 'react';
 import type { SubjectEntry, FormState, ConflictInfo } from '../types';
 import { SubjectForm } from './SubjectForm';
+import type { DynamicData } from '../hooks/useTimetableStore';
 
 interface EntryFormModalProps {
   open: boolean;
@@ -29,6 +30,7 @@ interface EntryFormModalProps {
   editingEntry?: SubjectEntry | null;
   formState: FormState;
   onFormStateChange: (state: FormState) => void;
+  dynamicData: DynamicData[];
 }
 
 export function EntryFormModal({
@@ -41,6 +43,7 @@ export function EntryFormModal({
   editingEntry,
   formState,
   onFormStateChange,
+  dynamicData,
 }: EntryFormModalProps) {
   const [position, setPosition] = useState({ x: 200, y: 120 });
   const draggingRef = useRef(false);
@@ -144,6 +147,7 @@ export function EntryFormModal({
           onCancelEdit={onCancel}
           formState={formState}
           onFormStateChange={onFormStateChange}
+          dynamicData={dynamicData}
         />
       </div>
     </Modal>
