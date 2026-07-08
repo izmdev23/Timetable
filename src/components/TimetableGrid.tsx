@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, memo } from 'react';
-import { Empty, Typography, Tooltip, Tag, Select, Popover, Dropdown } from 'antd';
+import { Empty, Typography, Tooltip, Tag, Select, Popover, Dropdown, Divider } from 'antd';
 import { EditOutlined, DeleteOutlined, AimOutlined } from '@ant-design/icons';
 import type { SubjectEntry, DayOfWeek, Schedule } from '../types';
 import { DAY_ORDER } from '../types';

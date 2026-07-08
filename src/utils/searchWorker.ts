@@ -44,11 +44,12 @@ self.onmessage = (e: MessageEvent<SearchMessage>) => {
       checkField(entry.offerCode, 'offerCode', 2.0);
       checkField(entry.subjectDescription, 'subjectDescription', 1.5);
       checkField(entry.assignedTeacherName, 'assignedTeacherName', 1.2);
-      checkField(entry.room, 'room', 1.2);
+      checkField(entry.room || '', 'room', 1.2);
       checkField(entry.program, 'program', 1.0);
       checkField(entry.programShorthand, 'programShorthand', 1.0);
       checkField(entry.year, 'year', 1.0);
       checkField(entry.section, 'section', 1.0);
+      checkField(entry.department || '', 'department', 1.0);
 
       entry.schedules.forEach((s) => {
         s.days.forEach((day) => checkField(day, 'day', 0.8));

@@ -834,6 +834,9 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             days: Array.isArray(s.days) ? (s.days as DayOfWeek[]) : [],
             startTime: typeof s.startTime === 'string' ? s.startTime : '',
             endTime: typeof s.endTime === 'string' ? s.endTime : '',
+            rooms: Array.isArray(s.rooms)
+              ? (s.rooms as string[])
+              : (typeof item.room === 'string' && item.room ? [item.room] : []),
           })),
           program: typeof item.program === 'string' ? item.program : '',
           programShorthand: typeof item.programShorthand === 'string' ? item.programShorthand : '',

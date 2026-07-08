@@ -140,20 +140,6 @@ export function SubjectForm({
     return Array.from(new Set(parsedTeachers.map((t) => t.middleName).filter(Boolean))).sort();
   }, [parsedTeachers]);
 
-  // Derive unique program combos from existing entries for cross-fill autocomplete
-  const programCombos = useMemo(() => {
-    const seen = new Map<string, { program: string; programShorthand: string }>();
-    for (const e of entries) {
-      if (e.program && e.programShorthand) {
-        const key = e.programShorthand.trim().toLowerCase();
-        if (!seen.has(key)) {
-          seen.set(key, { program: e.program.trim(), programShorthand: e.programShorthand.trim() });
-        }
-      }
-    }
-    return Array.from(seen.values()).sort((a, b) => a.program.localeCompare(b.program));
-  }, [entries]);
-
 
   // Populate form when formState from store changes
   useEffect(() => {
