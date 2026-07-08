@@ -1,4 +1,4 @@
-import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, List, Popconfirm } from 'antd';
+import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, Tabs, Card, Dropdown } from 'antd';
 import {
   SaveOutlined,
   DownloadOutlined,
@@ -6,12 +6,11 @@ import {
   EyeOutlined,
   PlusOutlined,
   UndoOutlined,
-  RedoOutlined,
-  DeleteOutlined
+  RedoOutlined
 } from '@ant-design/icons';
 import type { DayOfWeek } from '../types';
 import { DAY_ORDER } from '../types';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import type { DynamicData } from '../hooks/useTimetableStore';
 
 const { Text } = Typography;
@@ -57,6 +56,10 @@ interface RibbonToolbarProps {
   onViewEndChange: (val: number) => void;
   timeOptions: { label: string; value: number }[];
 
+  // Room Timetable
+  activeRoom: string | null;
+  onActiveRoomChange: (room: string) => void;
+
   // App Actions
   onAddSubjectEntry: () => void;
 
@@ -64,6 +67,7 @@ interface RibbonToolbarProps {
   dynamicData: DynamicData[];
   addDynamicData: (dataType: string, value: string, displayAs: string) => Promise<void>;
   deleteDynamicData: (id: string) => Promise<void>;
+  updateDynamicData: (id: string, dataType: string, value: string, displayAs: string) => Promise<void>;
 }
 
 export function RibbonToolbar({
@@ -107,13 +111,52 @@ export function RibbonToolbar({
   dynamicData,
   addDynamicData,
   deleteDynamicData,
+  updateDynamicData,
+  activeRoom,
+  onActiveRoomChange,
 }: RibbonToolbarProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [form] = Form.useForm();
+  const [editingDynamicId, setEditingDynamicId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<string>('department');
 
-  const handleFinishData = async (values: { dataType: string; value: string; displayAs: string }) => {
-    await addDynamicData(values.dataType, values.value.trim(), values.displayAs.trim());
+  // Watch dataType to change form fields dynamically
+  const formDataType = Form.useWatch('dataType', form) ?? 'department';
+
+  // Sync form dataType with activeTab
+  useEffect(() => {
+    if (drawerOpen) {
+      setActiveTab(formDataType);
+    }
+  }, [formDataType, drawerOpen]);
+
+  const handleFinishData = async (values: any) => {
+    let finalValue = '';
+    let finalDisplay = '';
+
+    if (values.dataType === 'instructor') {
+      const lName = values.lastName?.trim() || '';
+      const fName = values.firstName?.trim() || '';
+      const mName = values.middleName?.trim() || '';
+      finalValue = `${lName}, ${fName}, ${mName}`;
+      finalDisplay = `${lName}, ${fName}${mName ? ' ' + mName.charAt(0) + '.' : ''}`;
+    } else if (values.dataType === 'room') {
+      finalValue = values.value?.trim() || '';
+      finalDisplay = `${values.displayAs?.trim() || values.value?.trim() || ''}|${values.building || ''}`;
+    } else {
+      finalValue = values.value?.trim() || '';
+      finalDisplay = values.displayAs?.trim() || values.value?.trim() || '';
+    }
+
+    if (editingDynamicId) {
+      await updateDynamicData(editingDynamicId, values.dataType, finalValue, finalDisplay);
+      setEditingDynamicId(null);
+    } else {
+      await addDynamicData(values.dataType, finalValue, finalDisplay);
+    }
+    const savedType = form.getFieldValue('dataType');
     form.resetFields();
+    form.setFieldsValue({ dataType: savedType });
   };
   return (
     <div
@@ -257,13 +300,38 @@ export function RibbonToolbar({
           <Select
             value={theme}
             onChange={onThemeChange}
-            style={{ width: 120 }}
+            style={{ width: 160 }}
             options={[
-              { label: 'Academic Blue', value: 'blue' },
-              { label: 'Emerald Forest', value: 'green' },
-              { label: 'Amethyst Purple', value: 'purple' },
-              { label: 'Sunset Terracotta', value: 'orange' },
-              { label: 'Midnight Slate', value: 'charcoal' },
+              { label: (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#2B4C7E' }} />
+                  <span>Academic Blue</span>
+                </div>
+              ), value: 'blue' },
+              { label: (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#3D6B50' }} />
+                  <span>Emerald Forest</span>
+                </div>
+              ), value: 'green' },
+              { label: (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#6B3D7E' }} />
+                  <span>Amethyst Purple</span>
+                </div>
+              ), value: 'purple' },
+              { label: (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#B35446' }} />
+                  <span>Sunset Terracotta</span>
+                </div>
+              ), value: 'orange' },
+              { label: (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#3D4F6B' }} />
+                  <span>Midnight Slate</span>
+                </div>
+              ), value: 'charcoal' },
             ]}
           />
           <Checkbox checked={bandedRows} onChange={(e) => onBandedRowsChange(e.target.checked)} style={{ fontSize: 11 }}>
@@ -324,11 +392,29 @@ export function RibbonToolbar({
         <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>TIMETABLE WINDOW</Text>
       </div>
 
+      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
+
+      {/* Room Timetable */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+        <Select
+          style={{ width: 140 }}
+          value={activeRoom}
+          onChange={onActiveRoomChange}
+          options={roomOptions.map((r) => ({ label: r, value: r }))}
+          placeholder="Select Room"
+        />
+        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>ROOM TIMETABLE</Text>
+      </div>
+
       <Drawer
         title="Manage Dynamic Toolbar Data"
         placement="right"
-        width={380}
-        onClose={() => setDrawerOpen(false)}
+        width={400}
+        onClose={() => {
+          setDrawerOpen(false);
+          setEditingDynamicId(null);
+          form.resetFields();
+        }}
         open={drawerOpen}
       >
         <Form
@@ -348,61 +434,206 @@ export function RibbonToolbar({
                 { label: 'Program', value: 'program' },
                 { label: 'Year', value: 'year' },
                 { label: 'Section', value: 'section' },
+                { label: 'Instructor', value: 'instructor' },
+                { label: 'Building', value: 'building' },
+                { label: 'Room', value: 'room' },
               ]}
+              onChange={(value) => {
+                setEditingDynamicId(null);
+                form.resetFields();
+                form.setFieldsValue({ dataType: value });
+                setActiveTab(value);
+              }}
             />
           </Form.Item>
-          <Form.Item
-            name="value"
-            label="Value (Internal)"
-            rules={[{ required: true, message: 'Please enter value' }]}
-          >
-            <Input placeholder="e.g. BSCS" />
-          </Form.Item>
-          <Form.Item
-            name="displayAs"
-            label="Display As"
-            rules={[{ required: true, message: 'Please enter display label' }]}
-          >
-            <Input placeholder="e.g. Bachelor of Science in Computer Science" />
-          </Form.Item>
-          <Form.Item>
+
+          {formDataType === 'instructor' ? (
+            <>
+              <Form.Item
+                name="lastName"
+                label="Last Name"
+                rules={[{ required: true, message: 'Required' }]}
+              >
+                <Input placeholder="e.g. Santos" autoComplete="off" />
+              </Form.Item>
+              <Form.Item
+                name="firstName"
+                label="First Name"
+                rules={[{ required: true, message: 'Required' }]}
+              >
+                <Input placeholder="e.g. Maria" autoComplete="off" />
+              </Form.Item>
+              <Form.Item
+                name="middleName"
+                label="Middle Name (optional)"
+              >
+                <Input placeholder="e.g. Clara" autoComplete="off" />
+              </Form.Item>
+            </>
+          ) : formDataType === 'room' ? (
+            <>
+              <Form.Item
+                name="value"
+                label="Room Name"
+                rules={[{ required: true, message: 'Required' }]}
+              >
+                <Input placeholder="e.g. Rm 101" autoComplete="off" />
+              </Form.Item>
+              <Form.Item
+                name="displayAs"
+                label="Display As (optional)"
+              >
+                <Input placeholder="e.g. Lecture Room 101" autoComplete="off" />
+              </Form.Item>
+              <Form.Item
+                name="building"
+                label="Building"
+                rules={[{ required: true, message: 'Please select building' }]}
+              >
+                <Select
+                  placeholder="Select Building"
+                  options={dynamicData
+                    .filter((d) => d.dataType === 'building')
+                    .map((d) => ({ label: d.displayAs || d.value, value: d.value }))}
+                />
+              </Form.Item>
+            </>
+          ) : (
+            <>
+              <Form.Item
+                name="value"
+                label="Value (Internal)"
+                rules={[{ required: true, message: 'Please enter value' }]}
+              >
+                <Input placeholder="e.g. BSCS" autoComplete="off" />
+              </Form.Item>
+              <Form.Item
+                name="displayAs"
+                label="Display As (optional)"
+              >
+                <Input placeholder="e.g. Bachelor of Science in Computer Science" autoComplete="off" />
+              </Form.Item>
+            </>
+          )}
+
+          <Form.Item style={{ marginBottom: 12 }}>
             <Button type="primary" htmlType="submit" block>
-              Add Entry
+              {editingDynamicId ? 'Save Changes' : 'Add Entry'}
             </Button>
           </Form.Item>
+          {editingDynamicId && (
+            <Button
+              style={{ marginBottom: 16 }}
+              block
+              onClick={() => {
+                setEditingDynamicId(null);
+                form.resetFields();
+                form.setFieldsValue({ dataType: formDataType });
+              }}
+            >
+              Cancel Edit
+            </Button>
+          )}
         </Form>
 
-        <Divider />
-        <Typography.Title level={5} style={{ fontSize: 13, marginBottom: 12 }}>
-          Existing Data Entries
-        </Typography.Title>
-        <List
-          size="small"
-          dataSource={dynamicData}
-          renderItem={(item) => (
-            <List.Item
-              actions={[
-                <Popconfirm
-                  title="Delete this data?"
-                  onConfirm={() => deleteDynamicData(item.id)}
-                  okText="Yes"
-                  cancelText="No"
-                >
-                  <Button type="text" danger size="small" icon={<DeleteOutlined />} />
-                </Popconfirm>
-              ]}
-            >
-              <List.Item.Meta
-                title={<span style={{ fontSize: 12, fontWeight: 600 }}>{item.displayAs}</span>}
-                description={
-                  <span style={{ fontSize: 11, color: '#8c8c8c' }}>
-                    Type: {item.dataType} | Value: {item.value}
-                  </span>
-                }
-              />
-            </List.Item>
-          )}
-        />
+        <Divider style={{ margin: '12px 0' }} />
+
+        <div>
+          <Typography.Title level={5} style={{ fontSize: 13, marginBottom: 8 }}>
+            Existing Data Entries
+          </Typography.Title>
+          <Tabs
+            size="small"
+            type="card"
+            activeKey={activeTab}
+            onChange={(key) => {
+              setActiveTab(key);
+              form.setFieldsValue({ dataType: key });
+              setEditingDynamicId(null);
+            }}
+            items={['department', 'program', 'year', 'section', 'building', 'room', 'instructor'].map((type) => {
+              const list = dynamicData.filter((d) => d.dataType === type);
+              return {
+                label: type === 'instructor' ? 'Instructors' : (type.charAt(0).toUpperCase() + type.slice(1)),
+                key: type,
+                children: (
+                  <div style={{ maxHeight: 250, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingBlock: 4 }}>
+                    {list.length === 0 ? (
+                      <Text type="secondary" style={{ fontSize: 11, textAlign: 'center', display: 'block', padding: 12 }}>
+                        No entries for {type === 'instructor' ? 'instructors' : type}.
+                      </Text>
+                    ) : (
+                      list.map((item) => {
+                        let displayLabel = item.displayAs;
+                        let subText = `Value: ${item.value}`;
+                        if (item.dataType === 'room') {
+                          const parts = item.displayAs.split('|');
+                          displayLabel = parts[0];
+                          subText = `Building: ${parts[1] || 'None'}`;
+                        } else if (item.dataType === 'instructor') {
+                          const parts = item.value.split(', ');
+                          const lastName = parts[0] || '';
+                          const firstName = parts[1] || '';
+                          const middleName = parts[2] || '';
+                          displayLabel = `${lastName}, ${firstName}`;
+                          subText = middleName ? `Middle Name: ${middleName}` : '';
+                        }
+                        return (
+                          <Dropdown
+                            key={item.id}
+                            menu={{
+                              items: [
+                                { label: 'Edit', key: 'edit' },
+                                { label: 'Delete', key: 'delete', danger: true },
+                              ],
+                              onClick: ({ key }) => {
+                                if (key === 'edit') {
+                                  setEditingDynamicId(item.id);
+                                  if (item.dataType === 'room') {
+                                    const parts = item.displayAs.split('|');
+                                    form.setFieldsValue({
+                                      dataType: 'room',
+                                      value: item.value,
+                                      displayAs: parts[0] || '',
+                                      building: parts[1] || '',
+                                    });
+                                  } else if (item.dataType === 'instructor') {
+                                    const parts = item.value.split(', ');
+                                    form.setFieldsValue({
+                                      dataType: 'instructor',
+                                      lastName: parts[0] || '',
+                                      firstName: parts[1] || '',
+                                      middleName: parts[2] || '',
+                                    });
+                                  } else {
+                                    form.setFieldsValue({
+                                      dataType: item.dataType,
+                                      value: item.value,
+                                      displayAs: item.displayAs,
+                                    });
+                                  }
+                                  document.querySelector('.ant-drawer-body')?.scrollTo({ top: 0, behavior: 'smooth' });
+                                } else if (key === 'delete') {
+                                  deleteDynamicData(item.id);
+                                }
+                              }
+                            }}
+                            trigger={['contextMenu']}
+                          >
+                            <Card size="small" style={{ borderRadius: 6, cursor: 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }} hoverable>
+                              <div style={{ fontSize: 12, fontWeight: 600 }}>{displayLabel}</div>
+                              {subText && <div style={{ fontSize: 10, color: '#8c8c8c' }}>{subText}</div>}
+                            </Card>
+                          </Dropdown>
+                        );
+                      })
+                    )}
+                  </div>
+                )
+              };
+            })}
+          />
+        </div>
       </Drawer>
     </div>
   );

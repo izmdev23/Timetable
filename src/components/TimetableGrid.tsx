@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, memo } from 'react';
-import { Empty, Typography, Tooltip, Tag, Select, Popover, Dropdown, Divider } from 'antd';
+import { Typography, Tooltip, Popover, Dropdown } from 'antd';
 import { EditOutlined, DeleteOutlined, AimOutlined } from '@ant-design/icons';
 import type { SubjectEntry, DayOfWeek, Schedule } from '../types';
 import { DAY_ORDER } from '../types';
@@ -8,16 +8,12 @@ import { formatTeacherForDisplay, parseTeacherName } from '../utils/teacherName'
 import { minutesTo12Hr, formatTimeTo12Hr } from '../utils/time';
 
 const { Text } = Typography;
-const { CheckableTag } = Tag;
 
 interface TimetableGridProps {
   entries: SubjectEntry[];
   hiddenDays: DayOfWeek[];
-  onToggleDay: (days: DayOfWeek[]) => void;
   viewStart: number;
   viewEnd: number;
-  onViewStartChange: (val: number) => void;
-  onViewEndChange: (val: number) => void;
   bandedRows: boolean;
   /** Called when the user clicks a schedule block to edit the entry */
   onEditEntry?: (entry: SubjectEntry) => void;
@@ -32,8 +28,7 @@ interface TimetableGridProps {
   onDropEntry?: (entryId: string, day: DayOfWeek, startMin: number, room: string) => void;
   onDeleteSchedule?: (entryId: string, scheduleId: string) => void;
   activeRoom: string | null;
-  onActiveRoomChange: (room: string) => void;
-  roomOptions: string[];
+  onSelectScheduleBlock?: (entry: SubjectEntry, schedule: Schedule) => void;
 }
 
 interface SlotEntry {
@@ -67,11 +62,7 @@ const COL_WIDTH = 130; // px per day column
 const TIME_COL_WIDTH = 72; // px for the time label column (widened for AM/PM format)
 const SLOT_INTERVAL = 30; // minutes per row
 
-// Generate list of 30-minute intervals for select inputs (from 00:00 to 24:00)
-const TIME_OPTIONS = Array.from({ length: 49 }, (_, i) => {
-  const min = i * 30;
-  return { label: toTime(min), value: min };
-});
+
 
 /**
  * Weekly timetable grid rendered as an absolutely-positioned overlay layout.
@@ -82,11 +73,8 @@ const TIME_OPTIONS = Array.from({ length: 49 }, (_, i) => {
 export const TimetableGrid = memo(function TimetableGrid({
   entries,
   hiddenDays,
-  onToggleDay,
   viewStart,
   viewEnd,
-  onViewStartChange,
-  onViewEndChange,
   bandedRows,
   onEditEntry,
   editingEntryId,
@@ -96,8 +84,7 @@ export const TimetableGrid = memo(function TimetableGrid({
   onDropEntry,
   onDeleteSchedule,
   activeRoom,
-  onActiveRoomChange,
-  roomOptions,
+  onSelectScheduleBlock,
 }: TimetableGridProps) {
   // Listen for undo/redo events to scroll and highlight the affected schedule block
   useEffect(() => {
@@ -311,21 +298,7 @@ export const TimetableGrid = memo(function TimetableGrid({
     };
   }, [resizeState, viewStart, viewEnd, onUpdateEntry]);
 
-  const handleStartChange = (val: number) => {
-    onViewStartChange(val);
-    if (val >= viewEnd) {
-      const newEnd = Math.min(val + 30, 24 * 60);
-      onViewEndChange(newEnd);
-    }
-  };
 
-  const handleEndChange = (val: number) => {
-    onViewEndChange(val);
-    if (val <= viewStart) {
-      const newStart = Math.max(0, val - 30);
-      onViewStartChange(newStart);
-    }
-  };
 
   const slotEntries = useMemo(() => {
     const flat: SlotEntry[] = [];
@@ -347,105 +320,11 @@ export const TimetableGrid = memo(function TimetableGrid({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {/* View Options Toolbar */}
-      <div
-        style={{
-          marginBottom: 12,
-          padding: '10px 14px',
-          background: '#F5F7FA',
-          borderRadius: 6,
-          border: '1px solid #D0D7E3',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 16,
-          flexWrap: 'wrap',
-        }}
-      >
-        {/* Room Timetable & Day Visibility Toggles */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Text strong style={{ fontSize: 12, color: '#1E3560' }}>
-              Room Timetable:
-            </Text>
-            <Select
-              size="small"
-              style={{ width: 140 }}
-              value={activeRoom}
-              onChange={onActiveRoomChange}
-              options={roomOptions.map((r) => ({ label: r, value: r }))}
-              placeholder="Select Room"
-            />
-          </div>
-          <Divider type="vertical" style={{ height: 20, borderColor: '#D0D7E3' }} />
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <Text strong style={{ fontSize: 12, color: '#1E3560' }}>
-              Show Days:
-            </Text>
-          {DAY_ORDER.map((day) => {
-            const isVisible = !hiddenDays.includes(day);
-            return (
-              <CheckableTag
-                key={day}
-                className="day-toggle-tag"
-                checked={isVisible}
-                onChange={(checked) => {
-                  if (checked) {
-                    onToggleDay(hiddenDays.filter((d) => d !== day));
-                  } else {
-                    onToggleDay([...hiddenDays, day]);
-                  }
-                }}
-                style={{
-                  border: '1px solid #D0D7E3',
-                  padding: '2px 8px',
-                  fontSize: 11,
-                  borderRadius: 4,
-                  userSelect: 'none',
-                  background: isVisible ? '#1E3560' : 'rgba(0,0,0,0.04)',
-                  color: isVisible ? '#FFFFFF' : '#7A8BA8',
-                }}
-              >
-                {day}
-              </CheckableTag>
-            );
-          })}
-        </div>
-      </div>
-
-        {/* Timespan filter dropdowns */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Text strong style={{ fontSize: 12, color: '#1E3560' }}>
-            Time Window:
-          </Text>
-          <Select
-            size="small"
-            style={{ width: 80 }}
-            value={viewStart}
-            onChange={handleStartChange}
-            options={TIME_OPTIONS.slice(0, -1)} // omit 24:00 as start time
-          />
-          <Text style={{ fontSize: 12 }}>to</Text>
-          <Select
-            size="small"
-            style={{ width: 80 }}
-            value={viewEnd}
-            onChange={handleEndChange}
-            options={TIME_OPTIONS.filter((opt) => opt.value > viewStart)} // end must be after start
-          />
-        </div>
-      </div>
-
-      {entries.length === 0 ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: 200 }}>
-          <Empty description="Add entries to see the timetable" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-        </div>
-      ) : (
-        <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 250px)', border: '1px solid #D0D7E3', borderRadius: 4 }}>
-          <div
-            onClick={onCancelEdit}
-            style={{ display: 'flex', minWidth: TIME_COL_WIDTH + totalDays * COL_WIDTH, position: 'relative' }}
-          >
+      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 250px)', border: '1px solid #D0D7E3', borderRadius: 4 }}>
+        <div
+          onClick={onCancelEdit}
+          style={{ display: 'flex', minWidth: TIME_COL_WIDTH + totalDays * COL_WIDTH, position: 'relative' }}
+        >
             {/* Time label column */}
             <div style={{ width: TIME_COL_WIDTH, flexShrink: 0, position: 'sticky', left: 0, zIndex: 3, background: '#F5F7FA' }}>
               {/* Header cell */}
@@ -541,10 +420,16 @@ export const TimetableGrid = memo(function TimetableGrid({
 
                   {/* Entry cells */}
                   <div
+                    className="grid-day-column"
+                    data-day-column={day}
+                    data-room={activeRoom || ''}
                     onDragOver={(e) => {
                       e.preventDefault();
-                      e.dataTransfer.dropEffect = 'move';
+                      e.dataTransfer.dropEffect = 'copy';
                       e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.08)';
+                    }}
+                    onDragEnter={(e) => {
+                      e.preventDefault();
                     }}
                     onDragLeave={(e) => {
                       e.currentTarget.style.backgroundColor = 'transparent';
@@ -578,6 +463,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                           height: ROW_HEIGHT,
                           borderTop: i === 0 ? '1px solid #D0D7E3' : '1px dashed #E4E9F0',
                           background: (bandedRows && i % 2 !== 0) ? 'rgba(238,241,246,0.5)' : 'transparent',
+                          pointerEvents: 'none',
                         }}
                       />
                     ))}
@@ -589,6 +475,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                         right: 0,
                         height: 20,
                         borderTop: '1px solid #D0D7E3',
+                        pointerEvents: 'none',
                       }}
                     />
 
@@ -628,9 +515,9 @@ export const TimetableGrid = memo(function TimetableGrid({
                                 <strong>{se.entry.subjectCode}</strong> — {se.entry.offerCode}
                               </div>
                               <div>{se.entry.subjectDescription}</div>
-                              <div>{se.entry.program} ({se.entry.programShorthand})</div>
+                              <div>{se.entry.program}</div>
                               <div>{se.entry.year} - {se.entry.section}</div>
-                              <div>Teacher: {formatTeacherForDisplay(se.entry.assignedTeacherName)}</div>
+                              <div>Teacher: {formatTeacherForDisplay(se.entry.assignedTeacherName) || 'Unassigned'}</div>
                               <div>Room: {se.entry.room}</div>
                               <div>
                                 {toTime(se.startMin)}–{toTime(se.endMin)}
@@ -672,6 +559,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                               tabIndex={0}
                               onClick={(e) => {
                                 e.stopPropagation();
+                                onSelectScheduleBlock?.(se.entry, se.schedule);
                               }}
                               onKeyDown={(e) => {
                               if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -716,7 +604,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                               padding: '2px 5px',
                               overflow: 'hidden',
                               zIndex: isDragged || isResized ? 4 : (isEditing ? 3 : 1),
-                              opacity: isDragged || isResized ? 0.75 : 1,
+                              opacity: isDragged || isResized ? 0.75 : (!(se.schedule.assignedTeacherName || se.entry.assignedTeacherName) ? 0.65 : 1),
                               border: isDragged || isResized
                                 ? '2px dashed rgba(255,255,255,0.8)'
                                 : isEditing ? '2px solid rgba(255,255,255,0.95)' : 'none',
@@ -809,7 +697,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                                   textOverflow: 'ellipsis',
                                 }}
                               >
-                                {se.entry.programShorthand} - {se.entry.year}{se.entry.section}
+                                {se.entry.program} - {se.entry.year}{se.entry.section}
                               </Text>
                             )}
                             {heightPx >= 48 && (
@@ -825,8 +713,10 @@ export const TimetableGrid = memo(function TimetableGrid({
                                 }}
                               >
                                 {(() => {
-                                  const { lastName, firstName } = parseTeacherName(se.entry.assignedTeacherName);
-                                  return firstName ? `${firstName.charAt(0).toUpperCase()}. ${lastName}` : lastName;
+                                  const teacher = se.schedule.assignedTeacherName || se.entry.assignedTeacherName;
+                                  if (!teacher) return 'Unassigned';
+                                  const { lastName, firstName } = parseTeacherName(teacher);
+                                  return firstName ? `${firstName.charAt(0).toUpperCase()}. ${lastName}` : lastName || 'Unassigned';
                                 })()}
                               </Text>
                             )}
@@ -892,9 +782,9 @@ export const TimetableGrid = memo(function TimetableGrid({
                                   <div style={{ fontSize: 11 }}>
                                     <div><strong>{ent.subjectCode}</strong> — {ent.offerCode}</div>
                                     <div>{ent.subjectDescription}</div>
-                                    <div>{ent.program} ({ent.programShorthand})</div>
+                                    <div>{ent.program}</div>
                                     <div>{ent.year} - {ent.section}</div>
-                                    <div>Teacher: {formatTeacherForDisplay(ent.assignedTeacherName)}</div>
+                                    <div>Teacher: {formatTeacherForDisplay(ent.assignedTeacherName) || 'Unassigned'}</div>
                                     <div>Room: {ent.room}</div>
                                     <div style={{ marginTop: 4, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 4 }}>
                                       <strong>Schedules:</strong>
@@ -1003,7 +893,6 @@ export const TimetableGrid = memo(function TimetableGrid({
             })}
           </div>
         </div>
-      )}
     </div>
   );
 });

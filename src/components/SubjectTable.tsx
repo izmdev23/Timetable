@@ -1,5 +1,5 @@
-import { Tag, Button, Popconfirm, Empty, Input, Radio, Tooltip } from 'antd';
-import { EditOutlined, DeleteOutlined, EyeOutlined, EyeInvisibleOutlined, SortAscendingOutlined, SortDescendingOutlined, TableOutlined } from '@ant-design/icons';
+import { Tag, Button, Popconfirm, Empty, Input } from 'antd';
+import { EditOutlined, DeleteOutlined, EyeOutlined, EyeInvisibleOutlined, SortAscendingOutlined, SortDescendingOutlined } from '@ant-design/icons';
 import { useRef, memo, useState, useMemo } from 'react';
 import type { SubjectEntry } from '../types';
 import { colorForSubject } from '../theme';
@@ -13,12 +13,11 @@ interface SubjectTableProps {
   onToggleHide: (id: string) => void;
   editingEntryId?: string | null;
 
-  // Search & Drag-and-drop & Tab/Sort additions
-  assignedEntryIds: Set<string>;
-  currentEntryIds: Set<string>;
+  // Search & Sort additions
   searchQuery: string;
   onSearchChange: (q: string) => void;
   searchResults: SubjectEntry[] | null;
+  onDragStartCustom?: (entryId: string, clientX: number, clientY: number) => void;
 }
 
 // Subcomponent to highlight matching text
@@ -46,44 +45,31 @@ export const SubjectTable = memo(function SubjectTable({
   hiddenEntryIds,
   onToggleHide,
   editingEntryId,
-  assignedEntryIds,
-  currentEntryIds,
   searchQuery,
   onSearchChange,
   searchResults,
+  onDragStartCustom,
 }: SubjectTableProps) {
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const [activeTab, setActiveTab] = useState<'all' | 'unassigned' | 'assigned' | 'current'>('all');
   const [sortOrder, setSortOrder] = useState<'az' | 'za' | 'none'>('none');
 
-  // Let's filter entries based on search & active tab & sorting
+  // Let's filter entries based on search & sorting
   const processedEntries = useMemo(() => {
     // 1. Search filter (if search results are active, use them)
-    let list = searchResults !== null ? searchResults : entries;
+    let list = (searchQuery.trim() !== '' && searchResults !== null) ? searchResults : entries;
 
-    // 2. Tab filter
-    if (activeTab === 'unassigned') {
-      list = list.filter((e) => !assignedEntryIds.has(e.id));
-    } else if (activeTab === 'assigned') {
-      list = list.filter((e) => assignedEntryIds.has(e.id));
-    } else if (activeTab === 'current') {
-      list = list.filter((e) => currentEntryIds.has(e.id));
-    }
-
-    // 3. Sorting (by Subject Code)
+    // 2. Sorting (by Subject Code)
     if (sortOrder === 'az') {
       list = [...list].sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
     } else if (sortOrder === 'za') {
       list = [...list].sort((a, b) => b.subjectCode.localeCompare(a.subjectCode));
     }
 
+    console.log("SubjectTable input entries:", entries);
+    console.log("SubjectTable searchResults:", searchResults, "query:", searchQuery);
+    console.log("SubjectTable processedEntries:", list);
     return list;
-  }, [entries, searchResults, activeTab, assignedEntryIds, currentEntryIds, sortOrder]);
-
-  const handleDragStart = (e: React.DragEvent, entryId: string) => {
-    e.dataTransfer.setData('text/plain', entryId);
-    e.dataTransfer.effectAllowed = 'move';
-  };
+  }, [entries, searchResults, searchQuery, sortOrder]);
 
   const toggleSort = () => {
     setSortOrder((prev) => (prev === 'az' ? 'za' : prev === 'za' ? 'none' : 'az'));
@@ -98,6 +84,11 @@ export const SubjectTable = memo(function SubjectTable({
         background: '#FFFFFF',
       }}
     >
+      {/* Title */}
+      <div style={{ padding: '12px 16px 4px 16px', fontWeight: 600, fontSize: '14px', color: '#1E293B' }}>
+        Subject List
+      </div>
+
       {/* Search and Sort controls */}
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #E4E9F0', display: 'flex', gap: 6, alignItems: 'center' }}>
         <Input
@@ -117,29 +108,6 @@ export const SubjectTable = memo(function SubjectTable({
         >
           {sortOrder === 'none' ? 'Sort' : sortOrder === 'az' ? 'A-Z' : 'Z-A'}
         </Button>
-      </div>
-
-      {/* Tabs */}
-      <div style={{ padding: '4px 12px', borderBottom: '1px solid #E4E9F0', background: '#F8FAFC', display: 'flex', gap: 6, alignItems: 'center' }}>
-        <Radio.Group
-          value={activeTab === 'current' ? 'all' : activeTab}
-          onChange={(e) => setActiveTab(e.target.value as any)}
-          size="small"
-          buttonStyle="solid"
-          style={{ flex: 1, display: 'flex' }}
-        >
-          <Radio.Button value="all" style={{ flex: 1, textAlign: 'center', fontSize: 11 }}>All</Radio.Button>
-          <Radio.Button value="unassigned" style={{ flex: 1, textAlign: 'center', fontSize: 11 }}>Unassigned</Radio.Button>
-          <Radio.Button value="assigned" style={{ flex: 1, textAlign: 'center', fontSize: 11 }}>Assigned</Radio.Button>
-        </Radio.Group>
-        <Tooltip title="Show Current (entries placed in the active timetable view)">
-          <Button
-            size="small"
-            type={activeTab === 'current' ? 'primary' : 'default'}
-            icon={<TableOutlined />}
-            onClick={() => setActiveTab(activeTab === 'current' ? 'all' : 'current')}
-          />
-        </Tooltip>
       </div>
 
       {/* List content */}
@@ -171,8 +139,14 @@ export const SubjectTable = memo(function SubjectTable({
                 ref={(el) => { cardRefs.current[entry.id] = el; }}
                 className="subject-card-item"
                 tabIndex={0}
-                draggable={true}
-                onDragStart={(e) => handleDragStart(e, entry.id)}
+                onMouseDown={(e) => {
+                  if (e.button !== 0) return;
+                  const target = e.target as HTMLElement;
+                  if (target.closest('.action-btn-hover') || target.closest('button')) {
+                    return;
+                  }
+                  onDragStartCustom?.(entry.id, e.clientX, e.clientY);
+                }}
                 style={{
                   background: isHidden ? '#F1F5F9' : '#FFFFFF',
                   border: isEditing ? '2px solid #3B82F6' : '1px solid #D0D7E3',
@@ -187,6 +161,8 @@ export const SubjectTable = memo(function SubjectTable({
                     : '0 1px 2px rgba(0,0,0,0.05)',
                   opacity: isHidden ? 0.6 : 1,
                   cursor: 'grab',
+                  userSelect: 'none',
+                  WebkitUserSelect: 'none',
                 }}
               >
                 {/* Top row: Subject Code, Offer Code, Actions */}
@@ -255,7 +231,7 @@ export const SubjectTable = memo(function SubjectTable({
                   <div>
                     <span style={{ color: '#7A8BA8', marginRight: 4 }}>Teacher:</span>
                     <span style={{ fontWeight: 500 }}>
-                      <HighlightedText text={formatTeacherForDisplay(entry.assignedTeacherName)} query={searchQuery} />
+                      <HighlightedText text={formatTeacherForDisplay(entry.assignedTeacherName) || 'Unassigned'} query={searchQuery} />
                     </span>
                   </div>
                   {entry.department && (
@@ -270,7 +246,7 @@ export const SubjectTable = memo(function SubjectTable({
 
                 {/* Program/Year/Section */}
                 <div style={{ fontSize: 10, color: '#7A8BA8', display: 'flex', gap: 8 }}>
-                  <span>Prog: <HighlightedText text={entry.programShorthand} query={searchQuery} /></span>
+                  <span>Prog: <HighlightedText text={entry.program} query={searchQuery} /></span>
                   <span>Yr: <HighlightedText text={String(entry.year)} query={searchQuery} /></span>
                   <span>Sec: <HighlightedText text={entry.section} query={searchQuery} /></span>
                 </div>

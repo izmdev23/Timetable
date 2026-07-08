@@ -14,6 +14,7 @@ export interface Schedule {
   endTime: string;
   /** Rooms assigned specifically for this schedule slot */
   rooms: string[];
+  assignedTeacherName?: string;
 }
 
 /** A complete subject entry with one or more schedules */
@@ -28,7 +29,6 @@ export interface SubjectEntry {
   schedules: Schedule[];
   color?: string;
   program: string;
-  programShorthand: string;
   year: number;
   section: string;
   department?: string;
@@ -72,15 +72,11 @@ export interface FormState {
   subjectCode: string;
   offerCode: string;
   subjectDescription: string;
-  teacherLastName: string;
-  teacherFirstName: string;
-  teacherMiddleName: string;
   room?: string[];
   colorRandom: boolean;
   color: string;
   schedules: FormSchedule[];
   program: string;
-  programShorthand: string;
   year: string;
   section: string;
   department?: string;

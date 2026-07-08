@@ -103,7 +103,14 @@ function filterEntriesForExport(
         schedules,
       };
     })
-    .filter((entry) => entry.schedules.length > 0);
+    .filter((entry) => {
+      const original = entries.find((e) => e.id === entry.id);
+      const originalHadSchedules = original ? original.schedules.length > 0 : false;
+      if (originalHadSchedules && entry.schedules.length === 0) {
+        return false;
+      }
+      return true;
+    });
 }
 
 interface HomePageProps {

@@ -1,7 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import Database from '@tauri-apps/plugin-sql';
 import type { SubjectEntry, ConflictInfo, DayOfWeek, FormState } from '../types';
-import { parseTeacherName } from '../utils/teacherName';
 
 /** Shared DB connection promise — opened once per app session */
 let dbPromise: Promise<Database> | null = null;
@@ -36,11 +35,11 @@ function timesOverlap(
 /** Derives sorted unique string values from an array of entries via a field accessor */
 function uniqueValues(
   entries: SubjectEntry[],
-  accessor: (e: SubjectEntry) => string,
+  accessor: (e: SubjectEntry) => string | undefined | null,
 ): string[] {
   const seen = new Set<string>();
   for (const entry of entries) {
-    const val = accessor(entry).trim();
+    const val = (accessor(entry) || '').trim();
     if (val) seen.add(val);
   }
   return Array.from(seen).sort();
@@ -57,15 +56,11 @@ export const DEFAULT_FORM_STATE: FormState = {
   subjectCode: '',
   offerCode: '',
   subjectDescription: '',
-  teacherLastName: '',
-  teacherFirstName: '',
-  teacherMiddleName: '',
   room: [],
   colorRandom: true,
   color: '#2B4C7E',
-  schedules: [{ days: [], timeRange: null, rooms: [] }],
+  schedules: [],
   program: '',
-  programShorthand: '',
   year: '1',
   section: '',
   department: '',
@@ -132,6 +127,7 @@ export interface TimetableStore {
   dynamicData: DynamicData[];
   addDynamicData: (dataType: string, value: string, displayAs: string) => Promise<void>;
   deleteDynamicData: (id: string) => Promise<void>;
+  updateDynamicData: (id: string, dataType: string, value: string, displayAs: string) => Promise<void>;
 }
 
 /**
@@ -188,10 +184,14 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     }
   }, [timetableId]);
 
-  // Load dynamic data on mount
+  // Load dynamic data when timetableId changes
   useEffect(() => {
+    if (!timetableId) return;
     getDb()
-      .then((db) => db.select<{ id: string; data_type: string; value: string; display_as: string }[]>('SELECT id, data_type, value, display_as FROM dynamic_data'))
+      .then((db) => db.select<{ id: string; data_type: string; value: string; display_as: string }[]>(
+        'SELECT id, data_type, value, display_as FROM dynamic_data WHERE timetable_id = $1',
+        [timetableId]
+      ))
       .then((rows) => {
         const mapped = rows.map((r) => ({
           id: r.id,
@@ -202,22 +202,33 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         setDynamicData(mapped);
       })
       .catch((err) => console.error('Failed to load dynamic data:', err));
-  }, []);
+  }, [timetableId]);
 
   const addDynamicData = useCallback(async (dataType: string, value: string, displayAs: string) => {
     const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
     const db = await getDb();
     await db.execute(
-      'INSERT INTO dynamic_data (id, data_type, value, display_as) VALUES ($1, $2, $3, $4)',
-      [id, dataType, value, displayAs]
+      'INSERT INTO dynamic_data (id, data_type, value, display_as, timetable_id) VALUES ($1, $2, $3, $4, $5)',
+      [id, dataType, value, displayAs, timetableId]
     );
     setDynamicData((prev) => [...prev, { id, dataType, value, displayAs }]);
-  }, []);
+  }, [timetableId]);
 
   const deleteDynamicData = useCallback(async (id: string) => {
     const db = await getDb();
     await db.execute('DELETE FROM dynamic_data WHERE id = $1', [id]);
     setDynamicData((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const updateDynamicData = useCallback(async (id: string, dataType: string, value: string, displayAs: string) => {
+    const db = await getDb();
+    await db.execute(
+      'UPDATE dynamic_data SET data_type = $2, value = $3, display_as = $4 WHERE id = $1',
+      [id, dataType, value, displayAs]
+    );
+    setDynamicData((prev) =>
+      prev.map((item) => (item.id === id ? { id, dataType, value, displayAs } : item))
+    );
   }, []);
 
   // Load entries, hiddenDays, file_path, theme, and banded_rows from the database on mount
@@ -303,6 +314,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       isUndoRedoOperation = false,
       newHiddenDays = hiddenDays
     ): void => {
+      console.log("commitState calling setEntries with:", newEntries);
       setEntries(newEntries);
       setEditingEntryIdState(newEditingEntryId);
       setFormStateState(newFormState);
@@ -440,7 +452,11 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         (e) =>
           e.subjectCode.trim().toLowerCase() === entry.subjectCode.trim().toLowerCase() &&
           e.offerCode.trim().toLowerCase() === entry.offerCode.trim().toLowerCase() &&
-          e.subjectDescription.trim().toLowerCase() === entry.subjectDescription.trim().toLowerCase()
+          e.subjectDescription.trim().toLowerCase() === entry.subjectDescription.trim().toLowerCase() &&
+          e.program.trim().toLowerCase() === entry.program.trim().toLowerCase() &&
+          e.year === entry.year &&
+          e.section.trim().toLowerCase() === entry.section.trim().toLowerCase() &&
+          (e.department || '').trim().toLowerCase() === (entry.department || '').trim().toLowerCase()
       );
 
       let nextEntries = entries;
@@ -456,7 +472,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         };
         nextEntries = entries.map((e) => (e.id === existingMatch.id ? targetEntry : e));
       } else {
-        nextEntries = [...entries, entry];
+        nextEntries = [entry, ...entries];
       }
 
       commitState(nextEntries, null, DEFAULT_FORM_STATE);
@@ -552,7 +568,6 @@ export function useTimetableStore(timetableId: string): TimetableStore {
             existingMatch.assignedTeacherName === entry.assignedTeacherName &&
             existingMatch.room === entry.room &&
             existingMatch.program === entry.program &&
-            existingMatch.programShorthand === entry.programShorthand &&
             existingMatch.year === entry.year &&
             existingMatch.section === entry.section;
 
@@ -686,7 +701,20 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       }))
     ];
     return {
-      assignedTeacherNames: uniqueValues(combinedEntries, (e) => e.assignedTeacherName),
+      assignedTeacherNames: (() => {
+        const seen = new Set<string>();
+        for (const entry of combinedEntries) {
+          const mainVal = (entry.assignedTeacherName || '').trim();
+          if (mainVal) seen.add(mainVal);
+          if (entry.schedules) {
+            for (const s of entry.schedules) {
+              const schedVal = (s.assignedTeacherName || '').trim();
+              if (schedVal) seen.add(schedVal);
+            }
+          }
+        }
+        return Array.from(seen).sort();
+      })(),
       subjectCodes: uniqueValues(combinedEntries, (e) => e.subjectCode),
       offerCodes: uniqueValues(combinedEntries, (e) => e.offerCode),
       rooms: (() => {
@@ -721,15 +749,10 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       const entry = entries.find((e) => e.id === id);
       if (!entry) return;
 
-      const { lastName, firstName, middleName } = parseTeacherName(entry.assignedTeacherName);
-
       const newFormState: FormState = {
         subjectCode: entry.subjectCode,
         offerCode: entry.offerCode,
         subjectDescription: entry.subjectDescription,
-        teacherLastName: lastName,
-        teacherFirstName: firstName,
-        teacherMiddleName: middleName,
         room: entry.room ? entry.room.split(',').map((r) => r.trim()).filter(Boolean) : [],
         colorRandom: !entry.color,
         color: entry.color || '#2B4C7E',
@@ -739,26 +762,27 @@ export function useTimetableStore(timetableId: string): TimetableStore {
           rooms: s.rooms || (entry.room ? [entry.room] : []),
         })),
         program: entry.program || '',
-        programShorthand: entry.programShorthand || '',
         year: entry.year ? String(entry.year) : '1',
         section: entry.section || '',
         department: entry.department || '',
       };
 
-      commitState(entries, id, newFormState);
+      setEditingEntryIdState(id);
+      setFormStateState(newFormState);
     },
-    [entries, commitState]
+    [entries]
   );
 
   const cancelEdit = useCallback((): void => {
-    commitState(entries, null, DEFAULT_FORM_STATE);
-  }, [entries, commitState]);
+    setEditingEntryIdState(null);
+    setFormStateState(DEFAULT_FORM_STATE);
+  }, []);
 
   const updateFormState = useCallback(
     (newFormState: FormState): void => {
-      commitState(entries, editingEntryId, newFormState);
+      setFormStateState(newFormState);
     },
-    [entries, editingEntryId, commitState]
+    []
   );
 
   const undo = useCallback((): void => {
@@ -828,5 +852,6 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     dynamicData,
     addDynamicData,
     deleteDynamicData,
+    updateDynamicData,
   };
 }

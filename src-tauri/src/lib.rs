@@ -55,6 +55,13 @@ const MIGRATION_V6: Migration = Migration {
     kind: MigrationKind::Up,
 };
 
+const MIGRATION_V7: Migration = Migration {
+    version: 7,
+    description: "add_timetable_id_to_dynamic_data",
+    sql: "ALTER TABLE dynamic_data ADD COLUMN timetable_id TEXT;",
+    kind: MigrationKind::Up,
+};
+
 #[tauri::command]
 async fn save_file_bytes(path: String, bytes: Vec<u8>) -> Result<(), String> {
     tokio::fs::write(&path, bytes).await.map_err(|e| e.to_string())
@@ -95,6 +102,7 @@ pub fn run() {
                         MIGRATION_V4,
                         MIGRATION_V5,
                         MIGRATION_V6,
+                        MIGRATION_V7,
                     ],
                 )
                 .build(),

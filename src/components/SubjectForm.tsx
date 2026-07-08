@@ -15,11 +15,10 @@ import {
   Modal,
 } from 'antd';
 import { PlusOutlined, DeleteOutlined, SaveOutlined, CloseOutlined } from '@ant-design/icons';
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import dayjs from 'dayjs';
 import type { SubjectEntry, Schedule, ConflictInfo, DayOfWeek, FormState } from '../types';
 import { DAY_ORDER } from '../types';
-import { parseTeacherName } from '../utils/teacherName';
 import { formatTimeTo12Hr } from '../utils/time';
 
 const { Text } = Typography;
@@ -61,9 +60,6 @@ interface FormValues {
   subjectCode: string;
   offerCode: string;
   subjectDescription: string;
-  teacherLastName: string;
-  teacherFirstName: string;
-  teacherMiddleName: string;
   room?: string[];
   colorRandom: boolean;
   color: string;
@@ -73,7 +69,6 @@ interface FormValues {
     rooms: string[];
   }>;
   program: string;
-  programShorthand: string;
   year: string;
   section: string;
   department: string;
@@ -123,22 +118,7 @@ export function SubjectForm({
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
   const colorRandom = Form.useWatch('colorRandom', form) ?? true;
 
-  // Parse teacher names to suggestions
-  const parsedTeachers = useMemo(() => {
-    return suggestions.assignedTeacherNames.map(parseTeacherName);
-  }, [suggestions.assignedTeacherNames]);
 
-  const lastNameSuggestions = useMemo(() => {
-    return Array.from(new Set(parsedTeachers.map((t) => t.lastName).filter(Boolean))).sort();
-  }, [parsedTeachers]);
-
-  const firstNameSuggestions = useMemo(() => {
-    return Array.from(new Set(parsedTeachers.map((t) => t.firstName).filter(Boolean))).sort();
-  }, [parsedTeachers]);
-
-  const middleNameSuggestions = useMemo(() => {
-    return Array.from(new Set(parsedTeachers.map((t) => t.middleName).filter(Boolean))).sort();
-  }, [parsedTeachers]);
 
 
   // Populate form when formState from store changes
@@ -147,9 +127,6 @@ export function SubjectForm({
       subjectCode: formState.subjectCode,
       offerCode: formState.offerCode,
       subjectDescription: formState.subjectDescription,
-      teacherLastName: formState.teacherLastName,
-      teacherFirstName: formState.teacherFirstName,
-      teacherMiddleName: formState.teacherMiddleName,
       colorRandom: formState.colorRandom,
       color: formState.color,
       schedules: (formState.schedules || []).map((s) => ({
@@ -158,7 +135,6 @@ export function SubjectForm({
         rooms: s.rooms || [],
       })),
       program: formState.program,
-      programShorthand: formState.programShorthand,
       year: formState.year,
       section: formState.section,
       department: formState.department || '',
@@ -181,11 +157,7 @@ export function SubjectForm({
         'subjectCode',
         'offerCode',
         'subjectDescription',
-        'teacherLastName',
-        'teacherFirstName',
-        'teacherMiddleName',
         'program',
-        'programShorthand',
         'year',
         'section',
         'colorRandom',
@@ -243,22 +215,16 @@ export function SubjectForm({
       }
     }
 
-    const lName = values.teacherLastName.trim();
-    const fName = values.teacherFirstName.trim();
-    const mName = values.teacherMiddleName?.trim() ?? '';
-    const combinedTeacherName = `${lName}, ${fName}, ${mName}`;
-
     const entry: SubjectEntry = {
       id: editingEntry?.id ?? uid(),
       subjectCode: values.subjectCode.trim(),
       offerCode: values.offerCode.trim(),
       subjectDescription: values.subjectDescription.trim(),
-      assignedTeacherName: combinedTeacherName,
+      assignedTeacherName: editingEntry?.assignedTeacherName || '',
       room: schedules.flatMap((s) => s.rooms).filter(Boolean).join(', '),
       color: values.colorRandom ? undefined : values.color,
       schedules,
       program: values.program,
-      programShorthand: values.programShorthand,
       year: Number(values.year),
       section: values.section,
       department: values.department,
@@ -270,9 +236,7 @@ export function SubjectForm({
           existing.subjectCode.trim().toLowerCase() === entry.subjectCode.toLowerCase() &&
           existing.offerCode.trim().toLowerCase() === entry.offerCode.toLowerCase() &&
           existing.subjectDescription.trim().toLowerCase() === entry.subjectDescription.toLowerCase() &&
-          existing.assignedTeacherName.trim().toLowerCase() === entry.assignedTeacherName.toLowerCase() &&
           existing.program.trim().toLowerCase() === entry.program.toLowerCase() &&
-          existing.programShorthand.trim().toLowerCase() === entry.programShorthand.toLowerCase() &&
           existing.year === entry.year &&
           existing.section.trim().toLowerCase() === entry.section.toLowerCase() &&
           (existing.department || '').trim().toLowerCase() === (entry.department || '').toLowerCase();
@@ -323,9 +287,6 @@ export function SubjectForm({
       subjectCode: allValues.subjectCode || '',
       offerCode: allValues.offerCode || '',
       subjectDescription: allValues.subjectDescription || '',
-      teacherLastName: allValues.teacherLastName || '',
-      teacherFirstName: allValues.teacherFirstName || '',
-      teacherMiddleName: allValues.teacherMiddleName || '',
       room: [],
       colorRandom: allValues.colorRandom ?? true,
       color: allValues.color || '#2B4C7E',
@@ -337,7 +298,6 @@ export function SubjectForm({
         rooms: s.rooms || [],
       })),
       program: allValues.program || '',
-      programShorthand: allValues.programShorthand || '',
       year: allValues.year || '1',
       section: allValues.section || '',
       department: allValues.department || '',
@@ -355,7 +315,6 @@ export function SubjectForm({
         offerCode: match.offerCode,
         subjectDescription: match.subjectDescription,
         program: match.program || '',
-        programShorthand: match.programShorthand || '',
         year: match.year !== undefined ? String(match.year) : '1',
         section: match.section || '',
       };
@@ -363,47 +322,7 @@ export function SubjectForm({
     }
   }
 
-  function handleLastNameSelect(value: string) {
-    const match = parsedTeachers.find((t) => t.lastName === value);
-    if (match) {
-      const current = form.getFieldsValue();
-      const updated = {
-        ...current,
-        teacherLastName: value,
-        teacherFirstName: match.firstName,
-        teacherMiddleName: match.middleName,
-      };
-      updateStoreFormState(updated);
-    }
-  }
 
-  function handleFirstNameSelect(value: string) {
-    const match = parsedTeachers.find((t) => t.firstName === value);
-    if (match) {
-      const current = form.getFieldsValue();
-      const updated = {
-        ...current,
-        teacherFirstName: value,
-        teacherLastName: match.lastName,
-        teacherMiddleName: match.middleName,
-      };
-      updateStoreFormState(updated);
-    }
-  }
-
-  function handleMiddleNameSelect(value: string) {
-    const match = parsedTeachers.find((t) => t.middleName === value);
-    if (match) {
-      const current = form.getFieldsValue();
-      const updated = {
-        ...current,
-        teacherMiddleName: value,
-        teacherLastName: match.lastName,
-        teacherFirstName: match.firstName,
-      };
-      updateStoreFormState(updated);
-    }
-  }
 
 
   return (
@@ -411,7 +330,7 @@ export function SubjectForm({
       size="small"
       title={
         <Text strong style={{ fontSize: 13 }}>
-          {editingEntry ? 'Edit Subject Entry' : 'Add Subject Entry'}
+          {editingEntry ? 'Edit Subject' : 'Add Subject'}
         </Text>
       }
       style={{ marginBottom: 12 }}
@@ -431,7 +350,7 @@ export function SubjectForm({
                   <strong>{c.type === 'teacher' ? 'Teacher' : c.type === 'room' ? 'Room' : 'Time'} conflict</strong> on{' '}
                   <strong>{c.day}</strong> {formatTimeTo12Hr(c.startTime)}–{formatTimeTo12Hr(c.endTime)} with{' '}
                   <em>
-                    {c.conflictingEntry.subjectCode} ({c.conflictingEntry.assignedTeacherName},{' '}
+                    {c.conflictingEntry.subjectCode} ({c.conflictingEntry.assignedTeacherName || 'Unassigned'},{' '}
                     {c.conflictingEntry.room})
                   </em>
                 </li>
@@ -448,64 +367,6 @@ export function SubjectForm({
         size="small"
         onValuesChange={(_changed, allValues) => updateStoreFormState(allValues)}
       >
-        <Row gutter={10}>
-          <Col span={9}>
-            <Form.Item
-              name="teacherLastName"
-              label="Last Name"
-              rules={[{ required: true, message: 'Required' }]}
-            >
-              <AutoComplete
-                options={toOptions(lastNameSuggestions)}
-                placeholder="e.g. Santos"
-                onSelect={handleLastNameSelect}
-                filterOption={(input, option) =>
-                  (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
-                }
-              />
-            </Form.Item>
-          </Col>
-          <Col span={9}>
-            <Form.Item
-              name="teacherFirstName"
-              label="First Name"
-              rules={[{ required: true, message: 'Required' }]}
-            >
-              <AutoComplete
-                options={toOptions(firstNameSuggestions)}
-                placeholder="e.g. Maria"
-                onSelect={handleFirstNameSelect}
-                filterOption={(input, option) =>
-                  (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
-                }
-              />
-            </Form.Item>
-          </Col>
-          <Col span={6}>
-            <Form.Item
-              name="teacherMiddleName"
-              label={
-                <span>
-                  Middle Name{' '}
-                  <span style={{ fontStyle: 'italic', opacity: 0.6, fontWeight: 'normal' }}>
-                    (optional)
-                  </span>
-                </span>
-              }
-            >
-              <AutoComplete
-                options={toOptions(middleNameSuggestions)}
-                placeholder="e.g. Clara"
-                onSelect={handleMiddleNameSelect}
-                filterOption={(input, option) =>
-                  (option?.value as string)?.toLowerCase().includes(input.toLowerCase())
-                }
-              />
-            </Form.Item>
-          </Col>
-        </Row>
-
-
         <Row gutter={10}>
           <Col span={12}>
             <Form.Item
@@ -555,7 +416,7 @@ export function SubjectForm({
         </Form.Item>
 
         <Row gutter={10}>
-          <Col span={8}>
+          <Col span={12}>
             <Form.Item
               name="department"
               label="Department"
@@ -563,11 +424,11 @@ export function SubjectForm({
             >
               <Select
                 placeholder="Select Department"
-                options={dynamicData.filter((d) => d.dataType === 'department').map((d) => ({ label: d.displayAs, value: d.value }))}
+                options={dynamicData.filter((d) => d.dataType === 'department').map((d) => ({ label: d.displayAs || d.value, value: d.value }))}
               />
             </Form.Item>
           </Col>
-          <Col span={8}>
+          <Col span={12}>
             <Form.Item
               name="program"
               label="Program"
@@ -575,19 +436,7 @@ export function SubjectForm({
             >
               <Select
                 placeholder="Select Program"
-                options={dynamicData.filter((d) => d.dataType === 'program').map((d) => ({ label: d.displayAs, value: d.value }))}
-              />
-            </Form.Item>
-          </Col>
-          <Col span={8}>
-            <Form.Item
-              name="programShorthand"
-              label="Program Shorthand"
-              rules={[{ required: true, message: 'Required' }]}
-            >
-              <Select
-                placeholder="Shorthand"
-                options={dynamicData.filter((d) => d.dataType === 'program').map((d) => ({ label: d.value, value: d.value }))}
+                options={dynamicData.filter((d) => d.dataType === 'program').map((d) => ({ label: d.displayAs || d.value, value: d.value }))}
               />
             </Form.Item>
           </Col>
@@ -746,7 +595,7 @@ export function SubjectForm({
             </Button>
           )}
           <Button type="primary" htmlType="submit" size="small" icon={<SaveOutlined />}>
-            {editingEntry ? 'Update' : 'Add Entry'}
+            {editingEntry ? 'Update' : 'Add Subject'}
           </Button>
         </Space>
       </Form>

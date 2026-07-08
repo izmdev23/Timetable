@@ -114,8 +114,21 @@ export function TitleBar({
       if (!filePath || typeof filePath !== "string") return;
 
       const content = await invoke<string>("read_text_file", { path: filePath });
-      const entries = JSON.parse(content) as unknown[];
-      if (!Array.isArray(entries)) throw new Error("Invalid timetable JSON");
+      const parsed = JSON.parse(content);
+
+      let entries: unknown[] = [];
+      let dynamicData: Array<{ id?: string; dataType: string; value: string; displayAs: string }> = [];
+
+      if (Array.isArray(parsed)) {
+        entries = parsed;
+      } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.entries)) {
+        entries = parsed.entries;
+        if (Array.isArray(parsed.dynamicData)) {
+          dynamicData = parsed.dynamicData;
+        }
+      } else {
+        throw new Error("Invalid timetable JSON");
+      }
 
       const fileName = filePath.split(/[\\\/]/).pop()?.replace(/\.json$/i, "") ?? "Imported";
       const db = await Database.load("sqlite:timetable.db");
@@ -125,6 +138,14 @@ export function TitleBar({
         "INSERT INTO timetables (id, name, entries_json, entry_count, created_at, updated_at, hidden_days) VALUES ($1, $2, $3, $4, $5, $6, $7)",
         [id, fileName, JSON.stringify(entries), entries.length, now, now, "[\"Sun\"]"],
       );
+
+      for (const item of dynamicData) {
+        const itemId = item.id || (Math.random().toString(36).slice(2) + Date.now().toString(36));
+        await db.execute(
+          "INSERT INTO dynamic_data (id, data_type, value, display_as, timetable_id) VALUES ($1, $2, $3, $4, $5)",
+          [itemId, item.dataType, item.value, item.displayAs, id]
+        );
+      }
       const meta: TimetableMeta = { id, name: fileName, entryCount: entries.length, createdAt: now, updatedAt: now, hiddenDays: ["Sun"] };
       onOpenTimetable?.(meta);
     } catch (e: unknown) {

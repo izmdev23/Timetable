@@ -15,6 +15,8 @@ export function useSubjectSearch(entries: SubjectEntry[]) {
     );
 
     workerRef.current.onmessage = (e: MessageEvent<SubjectEntry[]>) => {
+      // We check latest query via ref below, but since this closure only captures the initial render,
+      // it's safer to just set results. The UI layer (SubjectTable) ignores searchResults if query is empty.
       setResults(e.data);
       setIsSearching(false);
     };

@@ -46,7 +46,6 @@ self.onmessage = (e: MessageEvent<SearchMessage>) => {
       checkField(entry.assignedTeacherName, 'assignedTeacherName', 1.2);
       checkField(entry.room || '', 'room', 1.2);
       checkField(entry.program, 'program', 1.0);
-      checkField(entry.programShorthand, 'programShorthand', 1.0);
       checkField(entry.year, 'year', 1.0);
       checkField(entry.section, 'section', 1.0);
       checkField(entry.department || '', 'department', 1.0);

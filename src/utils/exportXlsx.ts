@@ -218,7 +218,7 @@ export async function exportToXlsx(
 
         cellText =
           `${entry.subjectCode}\n` +
-          `${entry.programShorthand} - ${entry.year}${entry.section}\n` +
+          `${entry.program} - ${entry.year}${entry.section}\n` +
           `${formattedTeacher}`;
 
         const hexColor = colorForSubject(entry.subjectCode, entry.color).replace('#', '');
@@ -229,7 +229,7 @@ export async function exportToXlsx(
         cellText = 'CONFLICT:\n' + currentSlotEntries.map(({ entry }) => {
           const { lastName, firstName } = parseTeacherName(entry.assignedTeacherName);
           const formattedTeacher = firstName ? `${firstName.charAt(0).toUpperCase()}. ${lastName}` : lastName;
-          return `${entry.subjectCode} (${entry.programShorthand}-${entry.year}${entry.section}, ${formattedTeacher})`;
+          return `${entry.subjectCode} (${entry.program}-${entry.year}${entry.section}, ${formattedTeacher})`;
         }).join('\n---\n');
 
         fillArgb = 'FFFFD6D6';

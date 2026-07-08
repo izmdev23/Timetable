@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Layout, Typography, Spin, message, Button, Modal, List, Select, Checkbox, ConfigProvider, Popover } from 'antd';
+import { Layout, Typography, Spin, message, Button, Modal, List, Select, Checkbox, ConfigProvider, Popover, Drawer, Tag } from 'antd';
 import { DeleteOutlined, CloseCircleFilled, BellFilled } from '@ant-design/icons';
 import { useTimetableStore } from '../hooks/useTimetableStore';
 import { getThemeConfig } from '../theme';
@@ -9,12 +9,13 @@ import { exportToXlsx } from '../utils/exportXlsx';
 import { usePreferences } from '../context/PreferencesContext';
 import { save, ask } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import type { SubjectEntry, DayOfWeek, ConflictInfo, FormState } from '../types';
+import type { SubjectEntry, DayOfWeek, ConflictInfo, Schedule } from '../types';
 
 import { RibbonToolbar } from '../components/RibbonToolbar';
 import { SchedulesPanel } from '../components/SchedulesPanel';
+import { SchedulePropertiesPanel } from '../components/SchedulePropertiesPanel';
+import { SubjectForm } from '../components/SubjectForm';
 import { useSubjectSearch } from '../hooks/useSubjectSearch';
-import { emit, listen } from '@tauri-apps/api/event';
 
 const { Content } = Layout;
 const { Text } = Typography;
@@ -91,7 +92,14 @@ function filterEntriesForExport(
         schedules,
       };
     })
-    .filter((entry) => entry.schedules.length > 0);
+    .filter((entry) => {
+      const original = entries.find((e) => e.id === entry.id);
+      const originalHadSchedules = original ? original.schedules.length > 0 : false;
+      if (originalHadSchedules && entry.schedules.length === 0) {
+        return false;
+      }
+      return true;
+    });
 }
 
 /**
@@ -113,6 +121,19 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       window.removeEventListener('titlebar:redo', handleRedo);
     };
   }, [store]);
+
+  // Prevent default window dragover/drop behaviors to allow Tauri/WebView2 HTML5 drag and drop
+  useEffect(() => {
+    const preventDefault = (e: DragEvent) => {
+      e.preventDefault();
+    };
+    window.addEventListener('dragover', preventDefault);
+    window.addEventListener('drop', preventDefault);
+    return () => {
+      window.removeEventListener('dragover', preventDefault);
+      window.removeEventListener('drop', preventDefault);
+    };
+  }, []);
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('store:history-change', {
@@ -144,12 +165,35 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [selectedRooms, setSelectedRooms] = useState<string[]>([]);
   const [hiddenEntryIds, setHiddenEntryIds] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<string | null>(null);
+  const [selectedScheduleBlock, setSelectedScheduleBlock] = useState<{ entry: SubjectEntry; schedule: Schedule } | null>(null);
+  const [subjectDrawerOpen, setSubjectDrawerOpen] = useState(false);
+
+  // Custom mouse-drag states
+  const [customDraggingId, setCustomDraggingId] = useState<string | null>(null);
+  const [customDragPos, setCustomDragPos] = useState<{ x: number; y: number } | null>(null);
+
+  const roomSuggestionsUnion = useMemo(() => {
+    const fromDynamic = store.dynamicData
+      .filter((d) => d.dataType === 'room')
+      .map((d) => d.value);
+    const union = new Set([...fromDynamic, ...store.suggestions.rooms]);
+    return Array.from(union).sort();
+  }, [store.dynamicData, store.suggestions.rooms]);
+
+  const activeSelectedBlock = useMemo(() => {
+    if (!selectedScheduleBlock) return null;
+    const entry = store.entries.find((e) => e.id === selectedScheduleBlock.entry.id);
+    if (!entry) return null;
+    const schedule = entry.schedules.find((s) => s.id === selectedScheduleBlock.schedule.id);
+    if (!schedule) return null;
+    return { entry, schedule };
+  }, [store.entries, selectedScheduleBlock]);
 
   useEffect(() => {
-    if (!activeRoom && store.suggestions.rooms.length > 0) {
-      setActiveRoom(store.suggestions.rooms[0]);
+    if (!activeRoom && roomSuggestionsUnion.length > 0) {
+      setActiveRoom(roomSuggestionsUnion[0]);
     }
-  }, [store.suggestions.rooms, activeRoom]);
+  }, [roomSuggestionsUnion, activeRoom]);
 
   const handleSelectedRoomsChange = useCallback((rooms: string[]) => {
     const allAvailableRooms = store.suggestions.rooms;
@@ -177,16 +221,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
   const { query: searchQuery, setQuery: setSearchQuery, results: searchResults } = useSubjectSearch(store.entries);
 
-  const assignedEntryIds = useMemo(() => {
-    const set = new Set<string>();
-    for (const entry of store.entries) {
-      if (entry.schedules.length > 0) {
-        set.add(entry.id);
-      }
-    }
-    return set;
-  }, [store.entries]);
-
   const TIME_OPTIONS = useMemo(() => {
     return Array.from({ length: 49 }, (_, i) => {
       const min = i * 30;
@@ -205,39 +239,16 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     );
   }, []);
 
-  const openSubjectFormWindow = useCallback(async () => {
-    try {
-      const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-      let formWin = await WebviewWindow.getByLabel('subject-form');
-      if (!formWin) {
-        formWin = new WebviewWindow('subject-form', {
-          title: store.editingEntryId ? 'Edit Subject Entry' : 'Add Subject Entry',
-          url: 'index.html',
-          width: 540,
-          height: 800,
-          minWidth: 500,
-          minHeight: 650,
-          resizable: true,
-          alwaysOnTop: true,
-        });
-
-        formWin.listen('tauri://destroyed', () => {
-          emit('subject-form:closed');
-        });
-      } else {
-        await formWin.show();
-        await formWin.setFocus();
-      }
-    } catch (e) {
-      console.error('Failed to open subject form window', e);
-    }
-  }, [store.editingEntryId]);
+  const handleCloseSubjectDrawer = useCallback(() => {
+    setSubjectDrawerOpen(false);
+    store.cancelEdit();
+  }, [store]);
 
   useEffect(() => {
     if (store.editingEntryId) {
-      openSubjectFormWindow();
+      setSubjectDrawerOpen(true);
     }
-  }, [store.editingEntryId, openSubjectFormWindow]);
+  }, [store.editingEntryId]);
 
 
 
@@ -245,12 +256,12 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     const keys = new Set<string>();
     const options: { label: string; value: string }[] = [];
     for (const entry of store.entries) {
-      if (entry.programShorthand && entry.year && entry.section) {
-        const key = `${entry.programShorthand}|${entry.year}|${entry.section}`;
+      if (entry.program && entry.year && entry.section) {
+        const key = `${entry.program}|${entry.year}|${entry.section}`;
         if (!keys.has(key)) {
           keys.add(key);
           options.push({
-            label: `${entry.programShorthand} - Year ${entry.year} - ${entry.section}`,
+            label: `${entry.program} - Year ${entry.year} - ${entry.section}`,
             value: key,
           });
         }
@@ -346,7 +357,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       const [prog, yr, sec] = selectedStudentKey.split('|');
       return store.entries.filter(
         (e) =>
-          e.programShorthand === prog &&
+          e.program === prog &&
           String(e.year) === yr &&
           e.section === sec
       );
@@ -381,10 +392,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       })
       .filter((e) => e.schedules.length > 0 && !hiddenEntryIds.includes(e.id));
   }, [filteredEntries, hiddenEntryIds, activeRoom]);
-
-  const currentEntryIds = useMemo(() => {
-    return new Set(gridEntries.map((e) => e.id));
-  }, [gridEntries]);
 
   const allConflictsList = useMemo(() => {
     const list: { entry: SubjectEntry; conflict: ConflictInfo }[] = [];
@@ -537,7 +544,11 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         viewEnd,
         prefs.excludeTimeWindow,
       );
-      const json = JSON.stringify(entriesToSave, null, 2);
+      const saveObj = {
+        entries: entriesToSave,
+        dynamicData: store.dynamicData,
+      };
+      const json = JSON.stringify(saveObj, null, 2);
       const bytes = Array.from(new TextEncoder().encode(json));
 
       try {
@@ -587,6 +598,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
   const handleCancelEdit = useCallback((): void => {
     store.cancelEdit();
+    setSelectedScheduleBlock(null);
   }, [store]);
 
   const handleDropEntry = useCallback((entryId: string, day: DayOfWeek, startMin: number, room: string) => {
@@ -615,6 +627,42 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     });
   }, [store]);
 
+  const handleDragStartCustom = useCallback((entryId: string, clientX: number, clientY: number) => {
+    setCustomDraggingId(entryId);
+    setCustomDragPos({ x: clientX, y: clientY });
+  }, []);
+
+  useEffect(() => {
+    if (!customDraggingId) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      setCustomDragPos({ x: e.clientX, y: e.clientY });
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const columnEl = el ? el.closest('.grid-day-column') : null;
+      if (columnEl) {
+        const day = columnEl.getAttribute('data-day-column') as DayOfWeek;
+        const room = columnEl.getAttribute('data-room') || '';
+        const rect = columnEl.getBoundingClientRect();
+        const relativeY = e.clientY - rect.top;
+        const slotIndex = Math.max(0, Math.floor((relativeY - 32) / 36)); // 32px is header cell height, 36px is ROW_HEIGHT
+        const startMin = viewStart + slotIndex * 30; // 30 is SLOT_INTERVAL
+        handleDropEntry(customDraggingId, day, startMin, room);
+      }
+      setCustomDraggingId(null);
+      setCustomDragPos(null);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [customDraggingId, viewStart, handleDropEntry]);
+
   const handleDeleteSchedule = useCallback((entryId: string, scheduleId: string) => {
     const entry = store.entries.find((e) => e.id === entryId);
     if (!entry) return;
@@ -638,67 +686,37 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     }
   }, []);
 
-  useEffect(() => {
-    const unlistenReady = listen('subject-form:ready', () => {
-      emit('subject-form:init', {
-        suggestions: store.suggestions,
-        entries: store.entries,
-        templates: [
-          ...store.entries.map((e) => ({
-            subjectCode: e.subjectCode,
-            offerCode: e.offerCode,
-            subjectDescription: e.subjectDescription,
-            assignedTeacherName: e.assignedTeacherName,
-            room: e.room,
-            program: e.program,
-            programShorthand: e.programShorthand,
-            year: e.year,
-            section: e.section,
-          })),
-          ...store.importedSuggestions.map((s) => ({
-            subjectCode: s.subjectCode,
-            offerCode: s.offerCode,
-            subjectDescription: s.subjectDescription,
-            assignedTeacherName: s.assignedTeacherName,
-            room: s.room,
-            program: s.program,
-            programShorthand: s.programShorthand,
-            year: s.year,
-            section: s.section,
-          })),
-        ],
-        editingEntry: editingEntry,
-        formState: store.formState,
-        theme: store.theme,
-        dynamicData: store.dynamicData,
-      });
-    });
-
-    const unlistenSubmit = listen<SubjectEntry>('subject-form:submit', (event) => {
-      const entry = event.payload;
-      const conflicts = handleFormSubmit(entry);
-      if (conflicts.length > 0) {
-        emit('subject-form:conflict', conflicts);
-      } else {
-        emit('subject-form:success');
-      }
-    });
-
-    const unlistenStateChange = listen<FormState>('subject-form:state-change', (event) => {
-      store.updateFormState(event.payload);
-    });
-
-    const unlistenClosed = listen('subject-form:closed', () => {
-      store.cancelEdit();
-    });
-
-    return () => {
-      unlistenReady.then((fn) => fn());
-      unlistenSubmit.then((fn) => fn());
-      unlistenStateChange.then((fn) => fn());
-      unlistenClosed.then((fn) => fn());
+  const subjectSuggestions = useMemo(() => {
+    return {
+      ...store.suggestions,
+      rooms: roomSuggestionsUnion,
     };
-  }, [store.suggestions, store.entries, store.importedSuggestions, editingEntry, store.formState, store.theme, store.dynamicData, handleFormSubmit]);
+  }, [store.suggestions, roomSuggestionsUnion]);
+
+  const templatesList = useMemo(() => {
+    return [
+      ...store.entries.map((e) => ({
+        subjectCode: e.subjectCode,
+        offerCode: e.offerCode,
+        subjectDescription: e.subjectDescription,
+        assignedTeacherName: e.assignedTeacherName,
+        room: e.room || '',
+        program: e.program,
+        year: e.year,
+        section: e.section,
+      })),
+      ...store.importedSuggestions.map((s) => ({
+        subjectCode: s.subjectCode,
+        offerCode: s.offerCode,
+        subjectDescription: s.subjectDescription,
+        assignedTeacherName: s.assignedTeacherName,
+        room: s.room,
+        program: s.program,
+        year: s.year,
+        section: s.section,
+      })),
+    ];
+  }, [store.entries, store.importedSuggestions]);
 
   // Export suggestions to JSON
   async function handleExportSuggestions() {
@@ -709,7 +727,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       assignedTeacherName: e.assignedTeacherName,
       room: e.room,
       program: e.program,
-      programShorthand: e.programShorthand,
       year: e.year,
       section: e.section,
     }));
@@ -868,7 +885,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   if (store.isLoading) {
     return (
       <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-        <Spin size="large" tip="Loading timetable..." />
+        <Spin size="large" description="Loading timetable..." />
       </div>
     );
   }
@@ -900,7 +917,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           teacherOptions={teacherOptions}
           selectedRooms={selectedRooms}
           onSelectedRoomsChange={handleSelectedRoomsChange}
-          roomOptions={store.suggestions.rooms}
+          roomOptions={roomSuggestionsUnion}
           theme={store.theme}
           onThemeChange={store.updateTheme}
           bandedRows={store.bandedRows}
@@ -914,11 +931,14 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           timeOptions={TIME_OPTIONS}
           onAddSubjectEntry={() => {
             store.cancelEdit();
-            openSubjectFormWindow();
+            setSubjectDrawerOpen(true);
           }}
           dynamicData={store.dynamicData}
           addDynamicData={store.addDynamicData}
           deleteDynamicData={store.deleteDynamicData}
+          updateDynamicData={store.updateDynamicData}
+          activeRoom={activeRoom}
+          onActiveRoomChange={setActiveRoom}
         />
 
         {/* ── Main Workspace Body ───────────────────────────────────── */}
@@ -942,11 +962,10 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
               hiddenEntryIds={hiddenEntryIds}
               onToggleHide={handleToggleHideEntry}
               editingEntryId={editingEntry?.id}
-              assignedEntryIds={assignedEntryIds}
-              currentEntryIds={currentEntryIds}
               searchQuery={searchQuery}
               onSearchChange={setSearchQuery}
               searchResults={searchResults}
+              onDragStartCustom={handleDragStartCustom}
             />
           </div>
 
@@ -967,11 +986,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
               <TimetableGrid
                 entries={gridEntries}
                 hiddenDays={store.hiddenDays}
-                onToggleDay={store.setHiddenDays}
                 viewStart={viewStart}
                 viewEnd={viewEnd}
-                onViewStartChange={setViewStart}
-                onViewEndChange={setViewEnd}
                 bandedRows={store.bandedRows}
                 onEditEntry={handleEdit}
                 editingEntryId={editingEntry?.id}
@@ -981,19 +997,39 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                 onDropEntry={handleDropEntry}
                 onDeleteSchedule={handleDeleteSchedule}
                 activeRoom={activeRoom}
-                onActiveRoomChange={setActiveRoom}
-                roomOptions={store.suggestions.rooms}
+                onSelectScheduleBlock={(entry, schedule) => setSelectedScheduleBlock({ entry, schedule })}
               />
             </div>
           </div>
 
-          {/* Right Slide-in Schedules Panel */}
-          <SchedulesPanel
-            entries={gridEntries}
-            onHighlightSchedule={handleHighlightSchedule}
-            onEditSchedule={handleEdit}
-            onDeleteSchedule={handleDeleteSchedule}
-          />
+          {/* Right Slide-in Schedules Panel / Schedule Properties */}
+          {activeSelectedBlock ? (
+            <SchedulePropertiesPanel
+              entry={activeSelectedBlock.entry}
+              schedule={activeSelectedBlock.schedule}
+              dynamicData={store.dynamicData}
+              onSave={(updatedEntry) => {
+                const conflicts = store.updateEntry(updatedEntry);
+                if (conflicts.length > 0) {
+                  messageApi.error('Conflict detected during save! Check conflict details.');
+                } else {
+                  messageApi.success('Subject properties updated.');
+                }
+              }}
+              onCancel={() => setSelectedScheduleBlock(null)}
+              onDeleteSchedule={(entryId, scheduleId) => {
+                handleDeleteSchedule(entryId, scheduleId);
+                setSelectedScheduleBlock(null);
+              }}
+            />
+          ) : (
+            <SchedulesPanel
+              entries={gridEntries}
+              onHighlightSchedule={handleHighlightSchedule}
+              onEditSchedule={handleEdit}
+              onDeleteSchedule={handleDeleteSchedule}
+            />
+          )}
         </Content>
 
         {/* ── Conflict Banner bottom bar ───────────────────────────── */}
@@ -1199,7 +1235,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                       onChange={(val) => setExportSelectedRooms(val)}
                       style={{ width: 180 }}
                       placeholder="Select or type rooms"
-                      options={store.suggestions.rooms.map((r) => ({ label: r, value: r }))}
+                      options={roomSuggestionsUnion.map((r) => ({ label: r, value: r }))}
                       maxTagCount="responsive"
                     />
                   </div>
@@ -1220,7 +1256,70 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             </div>
           </div>
         </Modal>
+
+        {/* Sliding Sidebar for Subject Form */}
+        <Drawer
+          title={editingEntry ? 'Edit Subject' : 'Add Subject'}
+          placement="left"
+          width={450}
+          onClose={handleCloseSubjectDrawer}
+          open={subjectDrawerOpen}
+          destroyOnClose
+        >
+          <SubjectForm
+            suggestions={subjectSuggestions}
+            entries={store.entries}
+            templates={templatesList}
+            onSubmit={(entry) => {
+              const conflicts = handleFormSubmit(entry);
+              if (conflicts.length > 0) {
+                messageApi.error('Conflict detected!');
+              } else {
+                messageApi.success(editingEntry ? 'Subject updated!' : 'Subject added!');
+                setSearchQuery('');
+                handleCloseSubjectDrawer();
+              }
+              return conflicts;
+            }}
+            editingEntry={editingEntry}
+            onCancelEdit={handleCloseSubjectDrawer}
+            formState={store.formState}
+            onFormStateChange={store.updateFormState}
+            dynamicData={store.dynamicData}
+          />
+        </Drawer>
       </Layout>
+
+      {customDraggingId && customDragPos && (
+        <div
+          style={{
+            position: 'fixed',
+            left: customDragPos.x + 12,
+            top: customDragPos.y + 12,
+            pointerEvents: 'none',
+            zIndex: 9999999,
+            opacity: 0.9,
+            boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
+            background: '#FFFFFF',
+            border: '2px solid #2B4C7E',
+            borderRadius: 6,
+            padding: '6px 10px',
+            fontSize: 11,
+            fontWeight: 700,
+            color: '#1E3560',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+          }}
+        >
+          <Tag color="#2B4C7E" style={{ margin: 0, fontWeight: 700, fontSize: 10, borderRadius: 4 }}>
+            {store.entries.find((e) => e.id === customDraggingId)?.subjectCode || 'Subject'}
+          </Tag>
+          <span>
+            {store.entries.find((e) => e.id === customDraggingId)?.offerCode || ''}
+          </span>
+        </div>
+      )}
     </ConfigProvider>
   );
 }
