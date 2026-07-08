@@ -1,0 +1,226 @@
+/* Minimal global resets — Ant Design handles component styling via CSS-in-JS */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Allow text selection inside input fields, textareas, and autocomplete selectors */
+input, textarea, [contenteditable="true"], .ant-select-selection-search-input {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 13px;
+}
+
+/* Scrollbar styling for a cleaner look */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #EEF1F6;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #B0BECC;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #8BA0B5;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Interactive Animations & Custom Micro-interactions
+   ────────────────────────────────────────────────────────────────────────── */
+
+/* Homepage cards: lift, glow, transition background */
+.timetable-card {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), 
+              box-shadow 0.25s ease, 
+              background-color 0.25s ease, 
+              border-color 0.25s ease !important;
+}
+.timetable-card:hover {
+  transform: translateY(-4px);
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: rgba(59, 130, 246, 0.45) !important;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4), 
+              0 0 14px rgba(59, 130, 246, 0.2) !important;
+}
+.timetable-card:active {
+  transform: translateY(-1px);
+}
+
+/* Timetable grid class blocks: float up, deepen shadow, increase z-index, slight scale */
+.timetable-entry-block {
+  cursor: pointer;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), 
+              box-shadow 0.2s ease, 
+              filter 0.2s ease,
+              z-index 0s linear;
+}
+.timetable-entry-block:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
+  filter: brightness(1.08);
+  z-index: 10 !important;
+}
+.timetable-entry-block:active {
+  transform: translateY(0) scale(1.0);
+}
+.timetable-entry-block:focus {
+  outline: 2px solid #3B82F6 !important;
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.3) !important;
+  z-index: 10 !important;
+}
+
+/* Show day filter tags: scale and lift */
+.day-toggle-tag {
+  transition: all 0.2s ease-in-out !important;
+}
+.day-toggle-tag:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  filter: brightness(1.1);
+}
+.day-toggle-tag:active {
+  transform: translateY(0);
+}
+
+/* Action icons: rotate, scale, or pop */
+.action-btn-hover {
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275), 
+              color 0.2s ease, 
+              background-color 0.2s ease !important;
+}
+.action-btn-hover:hover {
+  transform: scale(1.2);
+}
+.action-btn-hover:active {
+  transform: scale(0.9);
+}
+
+/* Standard Ant Cards and Inputs interactive improvements */
+.ant-card {
+  transition: box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.ant-card:hover {
+  border-color: #B4C2D3;
+}
+.ant-input, .ant-select-selector, .ant-picker {
+  transition: all 0.2s ease !important;
+}
+.ant-input:hover, .ant-select-selector:hover, .ant-picker:hover {
+  border-color: #3B82F6 !important;
+}
+.ant-btn {
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+.ant-btn:hover {
+  transform: translateY(-1px);
+}
+.ant-btn:active {
+  transform: translateY(0);
+}
+
+/* Compact subject cards: subtle translation, glow, and border accent */
+.subject-card-item {
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), 
+              box-shadow 0.22s ease, 
+              border-color 0.22s ease;
+}
+.subject-card-item:hover {
+  transform: translateY(-2px);
+  border-color: #3B82F6 !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08), 
+              0 0 10px rgba(59, 130, 246, 0.08) !important;
+}
+.subject-card-item:active {
+  transform: translateY(0);
+}
+.subject-card-item:focus {
+  outline: none;
+  border-color: #3B82F6 !important;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.4), 0 4px 12px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Conflict banner bell button with darkening hover effect */
+.conflict-bell-btn {
+  background: transparent !important;
+  color: #ffffff !important;
+  border: none !important;
+  transition: background-color 0.2s ease !important;
+}
+.conflict-bell-btn:hover {
+  background-color: rgba(0, 0, 0, 0.15) !important;
+  color: #ffffff !important;
+  transform: none !important;
+}
+.conflict-bell-btn:active {
+  background-color: rgba(0, 0, 0, 0.3) !important;
+  transform: none !important;
+}
+
+@keyframes pulse-highlight {
+  0% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0px rgba(59, 130, 246, 0.8);
+    outline: 2px solid rgba(59, 130, 246, 0.8);
+  }
+  50% {
+    transform: scale(1.04);
+    box-shadow: 0 0 0 12px rgba(59, 130, 246, 0);
+    outline: 4px solid rgba(59, 130, 246, 0);
+  }
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 0px rgba(59, 130, 246, 0);
+    outline: 0px solid rgba(59, 130, 246, 0);
+  }
+}
+
+.highlight-pulse {
+  animation: pulse-highlight 1.5s ease-in-out !important;
+  z-index: 100 !important;
+}
+
+/* Draggable Modal wrap styling */
+.no-pointer-events-wrap {
+  pointer-events: none !important;
+}
+.no-pointer-events-wrap .ant-modal {
+  pointer-events: auto !important;
+}
+
+/* Custom Ribbon Toolbar Styling */
+.ribbon-bar::-webkit-scrollbar {
+  height: 4px;
+}
+
+/* Search Highlights */
+mark {
+  box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  font-weight: 700;
+}
+
+.conflict-hover-item:hover {
+  background-color: rgba(255, 77, 79, 0.08);
+}
