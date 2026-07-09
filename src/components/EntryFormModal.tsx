@@ -1,7 +1,7 @@
 import { Modal } from 'antd';
 import { useState, useRef, useEffect } from 'react';
 import type { SubjectEntry, FormState, ConflictInfo } from '../types';
-import { SubjectForm } from './SubjectForm';
+import { BlueprintForm } from './BlueprintForm';
 import type { DynamicData } from '../hooks/useTimetableStore';
 
 interface EntryFormModalProps {
@@ -14,7 +14,7 @@ interface EntryFormModalProps {
     rooms: string[];
     subjectDescriptions?: string[];
   };
-  entries: SubjectEntry[];
+  blueprints: SubjectEntry[];
   templates: Array<{
     subjectCode: string;
     offerCode: string;
@@ -37,7 +37,7 @@ export function EntryFormModal({
   open,
   onCancel,
   suggestions,
-  entries,
+  blueprints,
   templates,
   onSubmit,
   editingEntry,
@@ -126,15 +126,15 @@ export function EntryFormModal({
           }}
           onMouseDown={handleMouseDown}
         >
-          {editingEntry ? '✏️ Edit Subject Entry' : '📝 Add Subject Entry'}
+          {editingEntry ? '✏️ Edit Blueprint' : '📝 Add Blueprint'}
         </div>
       }
       destroyOnClose
     >
       <div onMouseDown={(e) => e.stopPropagation()}>
-        <SubjectForm
+        <BlueprintForm
           suggestions={suggestions}
-          entries={entries}
+          blueprints={blueprints}
           templates={templates}
           onSubmit={(entry) => {
             const conflicts = onSubmit(entry);

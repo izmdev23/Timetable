@@ -182,7 +182,7 @@ function AppInner() {
 }
 
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { SubjectFormWindow } from './pages/SubjectFormWindow';
+import { BlueprintFormWindow } from './pages/BlueprintFormWindow';
 
 let initialIsFormWindow = false;
 try {
@@ -193,7 +193,7 @@ try {
 
 function App() {
   if (initialIsFormWindow) {
-    return <SubjectFormWindow />;
+    return <BlueprintFormWindow />;
   }
 
   return (

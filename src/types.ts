@@ -20,6 +20,8 @@ export interface Schedule {
 /** A complete subject entry with one or more schedules */
 export interface SubjectEntry {
   id: string;
+  /** When set, marks this entry as a placed instance derived from a blueprint */
+  blueprintId?: string;
   subjectCode: string;
   offerCode: string;
   subjectDescription: string;
@@ -65,6 +67,8 @@ export interface FormSchedule {
   days: DayOfWeek[];
   timeRange: [string, string] | null; // HH:mm format
   rooms: string[];
+  /** Preserved schedule ID when editing, so links survive form-based edits */
+  id?: string;
 }
 
 /** Form state structure for state history tracking */

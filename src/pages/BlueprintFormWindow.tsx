@@ -3,12 +3,12 @@ import { Layout, ConfigProvider, Alert } from 'antd';
 import { listen, emit } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import type { SubjectEntry, FormState, ConflictInfo } from '../types';
-import { SubjectForm } from '../components/SubjectForm';
+import { BlueprintForm } from '../components/BlueprintForm';
 import { getThemeConfig } from '../theme';
 
 const { Content } = Layout;
 
-export function SubjectFormWindow() {
+export function BlueprintFormWindow() {
   const [initData, setInitData] = useState<{
     suggestions: any;
     entries: SubjectEntry[];
@@ -22,20 +22,16 @@ export function SubjectFormWindow() {
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
 
   useEffect(() => {
-    // 1. Tell main window that this form window is ready
     emit('subject-form:ready');
 
-    // 2. Listen for initialization data from the main window
     const unlistenInit = listen<any>('subject-form:init', (event) => {
       setInitData(event.payload);
     });
 
-    // 3. Listen for conflict reports from main window
     const unlistenConflict = listen<ConflictInfo[]>('subject-form:conflict', (event) => {
       setConflicts(event.payload);
     });
 
-    // 4. Listen for success confirmation to close window
     const unlistenSuccess = listen('subject-form:success', () => {
       getCurrentWindow().close();
     });
@@ -73,9 +69,7 @@ export function SubjectFormWindow() {
   const dynamicData = initData?.dynamicData || [];
 
   const handleFormSubmit = (entry: SubjectEntry) => {
-    // Send form data back to main window for validation, conflict detection, and database storage
     emit('subject-form:submit', entry);
-    // Return empty conflicts array locally since main window handles validation and alerts via events
     return [];
   };
 
@@ -109,9 +103,9 @@ export function SubjectFormWindow() {
             />
           )}
 
-          <SubjectForm
+          <BlueprintForm
             suggestions={suggestions}
-            entries={entries}
+            blueprints={entries}
             templates={templates}
             onSubmit={handleFormSubmit}
             editingEntry={editingEntry}

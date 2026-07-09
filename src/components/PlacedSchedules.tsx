@@ -1,25 +1,22 @@
 import { Typography, Dropdown } from 'antd';
-import { CalendarOutlined, EditOutlined, DeleteOutlined, AimOutlined } from '@ant-design/icons';
+import { CalendarOutlined, DeleteOutlined, AimOutlined } from '@ant-design/icons';
 import type { SubjectEntry } from '../types';
 import { formatTimeTo12Hr } from '../utils/time';
 import { colorForSubject } from '../theme';
 
 const { Text } = Typography;
 
-interface SchedulesPanelProps {
+interface PlacedSchedulesProps {
   entries: SubjectEntry[];
   onHighlightSchedule: (entryId: string, scheduleId: string) => void;
-  onEditSchedule: (entry: SubjectEntry) => void;
   onDeleteSchedule: (entryId: string, scheduleId: string) => void;
 }
 
-export function SchedulesPanel({
+export function PlacedSchedules({
   entries,
   onHighlightSchedule,
-  onEditSchedule,
   onDeleteSchedule,
-}: SchedulesPanelProps) {
-  // Extract all individual schedule occurrences
+}: PlacedSchedulesProps) {
   const scheduleItems = entries.flatMap((entry) => {
     return entry.schedules.flatMap((s) => {
       return s.days.map((day) => ({
@@ -52,14 +49,13 @@ export function SchedulesPanel({
       <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
         {scheduleItems.length === 0 ? (
           <div style={{ padding: 24, textAlign: 'center', color: '#7A8BA8', fontSize: 12 }}>
-            No schedules placed yet. Drag entries to the timetable grid to schedule them.
+            Drag blueprints to the timetable grid to place them.
           </div>
         ) : (
           scheduleItems.map(({ entry, schedule, day, uniqueKey }) => {
             const bg = colorForSubject(entry.subjectCode, entry.color);
-            
+
             const menuItems = [
-              { label: 'Edit Entry', key: 'edit', icon: <EditOutlined /> },
               { label: 'Delete Schedule Slot', key: 'delete', icon: <DeleteOutlined />, danger: true },
               { label: 'Go to entry', key: 'goto', icon: <AimOutlined /> },
             ];
@@ -71,9 +67,7 @@ export function SchedulesPanel({
                   items: menuItems,
                   onClick: ({ key, domEvent }) => {
                     domEvent.stopPropagation();
-                    if (key === 'edit') {
-                      onEditSchedule(entry);
-                    } else if (key === 'delete') {
+                    if (key === 'delete') {
                       onDeleteSchedule(entry.id, schedule.id);
                     } else if (key === 'goto') {
                       const el = document.getElementById(`subject-card-${entry.id}`);
@@ -112,7 +106,7 @@ export function SchedulesPanel({
                     {entry.subjectDescription}
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, color: '#7A8BA8', marginTop: 2 }}>
-                    <span>📍 Room: <strong style={{ color: '#4A5B78' }}>{entry.room || 'N/A'}</strong></span>
+                    <span>Room: <strong style={{ color: '#4A5B78' }}>{entry.room || 'N/A'}</strong></span>
                     <span style={{ color: '#2B4C7E', fontWeight: 600 }}>{day} {formatTimeTo12Hr(schedule.startTime)}–{formatTimeTo12Hr(schedule.endTime)}</span>
                   </div>
                 </div>

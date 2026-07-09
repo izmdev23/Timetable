@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect, memo } from 'react';
 import { Typography, Tooltip, Popover, Dropdown } from 'antd';
-import { EditOutlined, DeleteOutlined, AimOutlined } from '@ant-design/icons';
+import { DeleteOutlined, AimOutlined, DisconnectOutlined } from '@ant-design/icons';
 import type { SubjectEntry, DayOfWeek, Schedule } from '../types';
 import { DAY_ORDER } from '../types';
 import { colorForSubject } from '../theme';
@@ -15,8 +15,6 @@ interface TimetableGridProps {
   viewStart: number;
   viewEnd: number;
   bandedRows: boolean;
-  /** Called when the user clicks a schedule block to edit the entry */
-  onEditEntry?: (entry: SubjectEntry) => void;
   /** ID of the entry currently being edited */
   editingEntryId?: string | null;
   /** Called when the user clicks empty space to clear editing focus */
@@ -29,6 +27,10 @@ interface TimetableGridProps {
   onDeleteSchedule?: (entryId: string, scheduleId: string) => void;
   activeRoom: string | null;
   onSelectScheduleBlock?: (entry: SubjectEntry, schedule: Schedule) => void;
+  linkingFirstBlockKey?: string | null;
+  linkingHighlightedKeys?: Set<string> | null;
+  linkingModeActive?: boolean;
+  onUnlinkBlock?: (blockKey: string) => void;
 }
 
 interface SlotEntry {
@@ -76,7 +78,6 @@ export const TimetableGrid = memo(function TimetableGrid({
   viewStart,
   viewEnd,
   bandedRows,
-  onEditEntry,
   editingEntryId,
   onCancelEdit,
   onUpdateEntry,
@@ -85,23 +86,29 @@ export const TimetableGrid = memo(function TimetableGrid({
   onDeleteSchedule,
   activeRoom,
   onSelectScheduleBlock,
+  linkingFirstBlockKey,
+  linkingHighlightedKeys,
+  linkingModeActive,
+  onUnlinkBlock,
 }: TimetableGridProps) {
   // Listen for undo/redo events to scroll and highlight the affected schedule block
   useEffect(() => {
     const handleHistoryFocus = (e: Event) => {
       const customEvent = e as CustomEvent<{
-        oldState: { entries: SubjectEntry[] };
-        newState: { entries: SubjectEntry[] };
+        oldState: { instances: SubjectEntry[] };
+        newState: { instances: SubjectEntry[] };
       }>;
       const { oldState, newState } = customEvent.detail;
+      const oldEntries = oldState.instances || [];
+      const newEntries = newState.instances || [];
       if (!oldState || !newState) return;
 
       let affectedEntryId: string | null = null;
       let affectedScheduleId: string | null = null;
 
       // Find added or modified entry and schedule
-      for (const newEntry of newState.entries) {
-        const oldEntry = oldState.entries.find((ent) => ent.id === newEntry.id);
+      for (const newEntry of newEntries) {
+        const oldEntry = oldEntries.find((ent) => ent.id === newEntry.id);
         if (!oldEntry) {
           affectedEntryId = newEntry.id;
           affectedScheduleId = newEntry.schedules[0]?.id || null;
@@ -503,8 +510,11 @@ export const TimetableGrid = memo(function TimetableGrid({
 
                       const topPx = ((displayStart - viewStart) / SLOT_INTERVAL) * ROW_HEIGHT;
                       const heightPx = ((displayEnd - displayStart) / SLOT_INTERVAL) * ROW_HEIGHT;
-                      const color = colorForSubject(se.entry.subjectCode, se.entry.color);
                       const isEditing = editingEntryId === se.entry.id;
+                      const blockKey = `${se.entry.id}:${se.schedule.id}`;
+                      const isLinkingFirst = linkingFirstBlockKey === blockKey;
+                      const isDimmed = !!linkingHighlightedKeys && !linkingHighlightedKeys.has(blockKey);
+                      const color = colorForSubject(se.entry.subjectCode, se.entry.color);
 
                       return (
                         <Tooltip
@@ -528,14 +538,17 @@ export const TimetableGrid = memo(function TimetableGrid({
                           <Dropdown
                             menu={{
                               items: [
-                                { label: 'Edit Entry', key: 'edit', icon: <EditOutlined /> },
+                                ...(linkingModeActive ? [
+                                  { label: 'Unlink Schedule', key: 'unlink', icon: <DisconnectOutlined />, danger: true }
+                                ] : []),
                                 { label: 'Delete Schedule Slot', key: 'delete', icon: <DeleteOutlined />, danger: true },
                                 { label: 'Go to entry', key: 'goto', icon: <AimOutlined /> },
                               ],
                               onClick: ({ key, domEvent }) => {
                                 domEvent.stopPropagation();
-                                if (key === 'edit') {
-                                  onEditEntry?.(se.entry);
+                                if (key === 'unlink') {
+                                  const blockKey = `${se.entry.id}:${se.schedule.id}`;
+                                  onUnlinkBlock?.(blockKey);
                                 } else if (key === 'delete') {
                                   if (onDeleteSchedule) {
                                     onDeleteSchedule(se.entry.id, se.schedule.id);
@@ -555,7 +568,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                           >
                             <div
                               id={`grid-block-${se.entry.id}-${se.schedule.id}`}
-                              className="timetable-entry-block"
+                              className={`timetable-entry-block ${isLinkingFirst ? 'linking-first-block' : ''}`}
                               tabIndex={0}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -565,14 +578,8 @@ export const TimetableGrid = memo(function TimetableGrid({
                               if (e.key === 'Delete' || e.key === 'Backspace') {
                                 e.stopPropagation();
                                 e.preventDefault();
-                                if (se.entry.schedules.length <= 1) {
-                                  onDeleteEntry?.(se.entry.id);
-                                } else {
-                                  const updated = {
-                                    ...se.entry,
-                                    schedules: se.entry.schedules.filter((s) => s.id !== se.schedule.id),
-                                  };
-                                  onUpdateEntry?.(updated);
+                                if (onDeleteSchedule) {
+                                  onDeleteSchedule(se.entry.id, se.schedule.id);
                                 }
                               }
                             }}
@@ -604,7 +611,11 @@ export const TimetableGrid = memo(function TimetableGrid({
                               padding: '2px 5px',
                               overflow: 'hidden',
                               zIndex: isDragged || isResized ? 4 : (isEditing ? 3 : 1),
-                              opacity: isDragged || isResized ? 0.75 : (!(se.schedule.assignedTeacherName || se.entry.assignedTeacherName) ? 0.65 : 1),
+                              opacity: isDragged || isResized
+                                ? 0.75
+                                : isDimmed
+                                  ? 0.2
+                                  : (!(se.schedule.assignedTeacherName || se.entry.assignedTeacherName) ? 0.65 : 1),
                               border: isDragged || isResized
                                 ? '2px dashed rgba(255,255,255,0.8)'
                                 : isEditing ? '2px solid rgba(255,255,255,0.95)' : 'none',

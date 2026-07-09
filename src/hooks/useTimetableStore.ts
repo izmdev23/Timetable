@@ -1,8 +1,8 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import Database from '@tauri-apps/plugin-sql';
 import type { SubjectEntry, ConflictInfo, DayOfWeek, FormState } from '../types';
+import { getConnectedKeys } from '../utils/linkUtils';
 
-/** Shared DB connection promise — opened once per app session */
 let dbPromise: Promise<Database> | null = null;
 
 function getDb(): Promise<Database> {
@@ -12,19 +12,12 @@ function getDb(): Promise<Database> {
   return dbPromise;
 }
 
-/** Converts "HH:mm" to total minutes for arithmetic comparison */
 function toMinutes(time: string): number {
   const parts = time.split(':');
   return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
 }
 
-/** Returns true if two time ranges overlap (exclusive boundary check) */
-function timesOverlap(
-  startA: string,
-  endA: string,
-  startB: string,
-  endB: string,
-): boolean {
+function timesOverlap(startA: string, endA: string, startB: string, endB: string): boolean {
   const sa = toMinutes(startA);
   const ea = toMinutes(endA);
   const sb = toMinutes(startB);
@@ -32,11 +25,7 @@ function timesOverlap(
   return sa < eb && sb < ea;
 }
 
-/** Derives sorted unique string values from an array of entries via a field accessor */
-function uniqueValues(
-  entries: SubjectEntry[],
-  accessor: (e: SubjectEntry) => string | undefined | null,
-): string[] {
+function uniqueValues(entries: SubjectEntry[], accessor: (e: SubjectEntry) => string | undefined | null): string[] {
   const seen = new Set<string>();
   for (const entry of entries) {
     const val = (accessor(entry) || '').trim();
@@ -47,7 +36,7 @@ function uniqueValues(
 
 export interface DynamicData {
   id: string;
-  dataType: string; // 'department' | 'program' | 'year' | 'section'
+  dataType: string;
   value: string;
   displayAs: string;
 }
@@ -67,14 +56,17 @@ export const DEFAULT_FORM_STATE: FormState = {
 };
 
 export interface TimetableStore {
-  entries: SubjectEntry[];
+  blueprints: SubjectEntry[];
+  instances: SubjectEntry[];
   hiddenDays: DayOfWeek[];
   isLoading: boolean;
   filePath: string | null;
   updateFilePath: (path: string | null) => Promise<void>;
-  addEntry: (entry: SubjectEntry) => ConflictInfo[];
-  updateEntry: (entry: SubjectEntry) => ConflictInfo[];
-  deleteEntry: (id: string) => void;
+  addBlueprint: (entry: SubjectEntry) => ConflictInfo[];
+  addInstance: (entry: SubjectEntry) => ConflictInfo[];
+  updateInstance: (entry: SubjectEntry, editedScheduleId?: string) => ConflictInfo[];
+  deleteBlueprint: (id: string) => void;
+  deleteInstance: (id: string) => void;
   setHiddenDays: (days: DayOfWeek[]) => void;
   detectConflicts: (candidate: SubjectEntry, againstEntries?: SubjectEntry[]) => ConflictInfo[];
   importEntries: (jsonString: string) => { success: boolean; error?: string };
@@ -130,12 +122,53 @@ export interface TimetableStore {
   updateDynamicData: (id: string, dataType: string, value: string, displayAs: string) => Promise<void>;
 }
 
-/**
- * Central data store for a single timetable identified by `timetableId`.
- * Loads entries and hiddenDays from SQLite via @tauri-apps/plugin-sql on mount and persists on every mutation.
- */
+interface HistorySnapshot {
+  blueprints: SubjectEntry[];
+  instances: SubjectEntry[];
+  editingEntryId: string | null;
+  formState: FormState;
+  dynamicData: DynamicData[];
+}
+
+function migrateEntries(parsed: unknown): { blueprints: SubjectEntry[]; instances: SubjectEntry[] } {
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    const obj = parsed as Record<string, unknown>;
+    if (Array.isArray(obj.blueprints) && Array.isArray(obj.instances)) {
+      return { blueprints: obj.blueprints as SubjectEntry[], instances: obj.instances as SubjectEntry[] };
+    }
+  }
+  if (Array.isArray(parsed)) {
+    const blueprints: SubjectEntry[] = [];
+    const instances: SubjectEntry[] = [];
+    for (const entry of parsed as SubjectEntry[]) {
+      const cleaned = {
+        ...entry,
+        schedules: (entry.schedules || []).map((s) => ({
+          ...s,
+          rooms: s.rooms || (entry.room ? [entry.room] : [])
+        }))
+      };
+      if (cleaned.schedules.length > 0) {
+        const blueprint = { ...cleaned, schedules: [], assignedTeacherName: '', room: undefined };
+        const existingBp = blueprints.find(
+          (b) => b.subjectCode === blueprint.subjectCode && b.offerCode === blueprint.offerCode
+        );
+        if (!existingBp) {
+          blueprints.push(blueprint);
+        }
+        instances.push(cleaned);
+      } else {
+        blueprints.push(cleaned);
+      }
+    }
+    return { blueprints, instances };
+  }
+  return { blueprints: [], instances: [] };
+}
+
 export function useTimetableStore(timetableId: string): TimetableStore {
-  const [entries, setEntries] = useState<SubjectEntry[]>([]);
+  const [blueprints, setBlueprints] = useState<SubjectEntry[]>([]);
+  const [instances, setInstances] = useState<SubjectEntry[]>([]);
   const [hiddenDays, setHiddenDaysState] = useState<DayOfWeek[]>([]);
   const [filePath, setFilePathState] = useState<string | null>(null);
   const [theme, setThemeState] = useState<string>('blue');
@@ -156,10 +189,10 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const [isLoading, setIsLoading] = useState(true);
   const [dynamicData, setDynamicData] = useState<DynamicData[]>([]);
 
-  const lastSavedEntriesRef = useRef<string>('');
+  const lastSavedJsonRef = useRef<string>('');
   const lastSavedHiddenDaysRef = useRef<string>('');
 
-  const historyRef = useRef<Array<{ entries: SubjectEntry[]; editingEntryId: string | null; formState: FormState }>>([]);
+  const historyRef = useRef<HistorySnapshot[]>([]);
   const historyIndexRef = useRef<number>(-1);
   const [canUndo, setCanUndo] = useState(false);
   const [canRedo, setCanRedo] = useState(false);
@@ -169,7 +202,6 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     setCanRedo(historyIndexRef.current < historyRef.current.length - 1);
   }, []);
 
-  // Load imported suggestions from localStorage on mount/timetableId change
   useEffect(() => {
     if (!timetableId) return;
     const stored = localStorage.getItem(`suggestions_${timetableId}`);
@@ -184,7 +216,6 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     }
   }, [timetableId]);
 
-  // Load dynamic data when timetableId changes
   useEffect(() => {
     if (!timetableId) return;
     getDb()
@@ -231,7 +262,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     );
   }, []);
 
-  // Load entries, hiddenDays, file_path, theme, and banded_rows from the database on mount
+  // Load from DB on mount
   useEffect(() => {
     if (!timetableId) return;
     setIsLoading(true);
@@ -248,43 +279,46 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         const hDaysJson = rows[0]?.hidden_days ?? '[]';
         const fPath = rows[0]?.file_path ?? null;
         const savedTheme = rows[0]?.theme ?? 'blue';
-        const savedBanded = rows[0]?.banded_rows !== 0; // null or 1 will be true
+        const savedBanded = rows[0]?.banded_rows !== 0;
+
         setFilePathState(fPath);
         setThemeState(savedTheme);
         setBandedRowsState(savedBanded);
+
         try {
           const parsed = JSON.parse(json);
-          const initialEntries = (Array.isArray(parsed) ? parsed : []).map((e: any) => ({
-            ...e,
-            schedules: (e.schedules || []).map((s: any) => ({
-              ...s,
-              rooms: s.rooms || (e.room ? [e.room] : [])
-            }))
-          }));
-          setEntries(initialEntries);
-          lastSavedEntriesRef.current = JSON.stringify(initialEntries);
+          const { blueprints: initialBlueprints, instances: initialInstances } = migrateEntries(parsed);
+          setBlueprints(initialBlueprints);
+          setInstances(initialInstances);
+          lastSavedJsonRef.current = JSON.stringify({ blueprints: initialBlueprints, instances: initialInstances });
           setEditingEntryIdState(null);
           setFormStateState(DEFAULT_FORM_STATE);
           historyRef.current = [{
-            entries: initialEntries,
+            blueprints: initialBlueprints,
+            instances: initialInstances,
             editingEntryId: null,
-            formState: DEFAULT_FORM_STATE
+            formState: DEFAULT_FORM_STATE,
+            dynamicData,
           }];
           historyIndexRef.current = 0;
           updateHistoryState();
         } catch {
-          setEntries([]);
-          lastSavedEntriesRef.current = '[]';
+          setBlueprints([]);
+          setInstances([]);
+          lastSavedJsonRef.current = JSON.stringify({ blueprints: [], instances: [] });
           setEditingEntryIdState(null);
           setFormStateState(DEFAULT_FORM_STATE);
           historyRef.current = [{
-            entries: [],
+            blueprints: [],
+            instances: [],
             editingEntryId: null,
-            formState: DEFAULT_FORM_STATE
+            formState: DEFAULT_FORM_STATE,
+            dynamicData,
           }];
           historyIndexRef.current = 0;
           updateHistoryState();
         }
+
         try {
           const parsedDays = JSON.parse(hDaysJson);
           const initialHidden = Array.isArray(parsedDays) ? parsedDays : [];
@@ -296,7 +330,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         }
       })
       .catch(() => {
-        setEntries([]);
+        setBlueprints([]);
+        setInstances([]);
         setHiddenDaysState([]);
         setFilePathState(null);
         setThemeState('blue');
@@ -305,17 +340,17 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       .finally(() => setIsLoading(false));
   }, [timetableId, updateHistoryState]);
 
-  /** Unified function to commit a new state to both history and local React state. */
   const commitState = useCallback(
     (
-      newEntries: SubjectEntry[],
+      newBlueprints: SubjectEntry[],
+      newInstances: SubjectEntry[],
       newEditingEntryId: string | null,
       newFormState: FormState,
       isUndoRedoOperation = false,
       newHiddenDays = hiddenDays
     ): void => {
-      console.log("commitState calling setEntries with:", newEntries);
-      setEntries(newEntries);
+      setBlueprints(newBlueprints);
+      setInstances(newInstances);
       setEditingEntryIdState(newEditingEntryId);
       setFormStateState(newFormState);
       setHiddenDaysState(newHiddenDays);
@@ -323,52 +358,54 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       if (!isUndoRedoOperation) {
         const newHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
         newHistory.push({
-          entries: newEntries,
+          blueprints: newBlueprints,
+          instances: newInstances,
           editingEntryId: newEditingEntryId,
           formState: newFormState,
+          dynamicData,
         });
         historyRef.current = newHistory;
         historyIndexRef.current = newHistory.length - 1;
         updateHistoryState();
       }
 
-      const entriesJson = JSON.stringify(newEntries);
+      const combinedJson = JSON.stringify({ blueprints: newBlueprints, instances: newInstances });
       const hiddenDaysJson = JSON.stringify(newHiddenDays);
 
-      const entriesChanged = entriesJson !== lastSavedEntriesRef.current;
+      const entriesChanged = combinedJson !== lastSavedJsonRef.current;
       const hiddenDaysChanged = hiddenDaysJson !== lastSavedHiddenDaysRef.current;
 
       if (entriesChanged || hiddenDaysChanged) {
-        lastSavedEntriesRef.current = entriesJson;
+        lastSavedJsonRef.current = combinedJson;
         lastSavedHiddenDaysRef.current = hiddenDaysJson;
 
         const now = new Date().toISOString();
+        const totalCount = newBlueprints.length + newInstances.length;
         getDb()
           .then((db) =>
             db.execute(
               'UPDATE timetables SET entries_json = $1, entry_count = $2, updated_at = $3, hidden_days = $4 WHERE id = $5',
-              [entriesJson, newEntries.length, now, hiddenDaysJson, timetableId],
+              [combinedJson, totalCount, now, hiddenDaysJson, timetableId],
             ),
           )
           .catch((e: unknown) => console.error('Failed to save timetable:', e));
       }
     },
-    [timetableId, hiddenDays, updateHistoryState]
+    [timetableId, hiddenDays, updateHistoryState, dynamicData]
   );
 
-  /** Legacy wrapper maintained for compatibility. */
-  const persistEntries = useCallback(
-    (newEntries: SubjectEntry[], newHiddenDays = hiddenDays, isUndoRedoOperation = false): void => {
-      commitState(newEntries, editingEntryId, formState, isUndoRedoOperation, newHiddenDays);
+  const persistState = useCallback(
+    (newBlueprints: SubjectEntry[], newInstances: SubjectEntry[], isUndoRedoOperation = false): void => {
+      commitState(newBlueprints, newInstances, editingEntryId, formState, isUndoRedoOperation, hiddenDays);
     },
     [commitState, editingEntryId, formState, hiddenDays],
   );
 
   const setHiddenDays = useCallback(
-    (days: DayOfWeek[]): void => {
-      persistEntries(entries, days);
+    (_days: DayOfWeek[]): void => {
+      persistState(blueprints, instances);
     },
-    [entries, persistEntries],
+    [blueprints, instances, persistState],
   );
 
   const updateFilePath = useCallback(
@@ -384,14 +421,10 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     [timetableId]
   );
 
-  /**
-   * Checks whether a candidate entry creates teacher or room conflicts
-   * against existing entries (skips the entry with its own id when editing).
-   */
   const detectConflicts = useCallback(
     (candidate: SubjectEntry, againstEntries?: SubjectEntry[]): ConflictInfo[] => {
       const conflicts: ConflictInfo[] = [];
-      const targetList = againstEntries ?? entries;
+      const targetList = againstEntries ?? instances;
 
       for (const existing of targetList) {
         if (existing.id === candidate.id) continue;
@@ -403,34 +436,26 @@ export function useTimetableStore(timetableId: string): TimetableStore {
                 if (cDay !== eDay) continue;
                 if (!timesOverlap(cs.startTime, cs.endTime, es.startTime, es.endTime)) continue;
 
-                const info: { day: DayOfWeek; startTime: string; endTime: string } = {
-                  day: cDay,
-                  startTime: cs.startTime,
-                  endTime: cs.endTime,
-                };
+                const info = { day: cDay, startTime: cs.startTime, endTime: cs.endTime };
 
-                // General Time conflict: any overlap in schedule times on the same day
                 conflicts.push({ type: 'time', conflictingEntry: existing, ...info });
 
-                // Teacher conflict: same assigned teacher, same time
                 if (
                   candidate.assignedTeacherName &&
                   existing.assignedTeacherName &&
-                  candidate.assignedTeacherName.trim().toLowerCase() ===
-                    existing.assignedTeacherName.trim().toLowerCase()
+                  candidate.assignedTeacherName.trim().toLowerCase() === existing.assignedTeacherName.trim().toLowerCase()
                 ) {
                   conflicts.push({ type: 'teacher', conflictingEntry: existing, ...info });
                 }
 
-                 // Room conflict: same room at schedule level, same time
-                 const candRooms = cs.rooms || [];
-                 const existRooms = es.rooms || [];
-                 const hasRoomOverlap = candRooms.some((r) =>
-                   existRooms.some((er) => er.trim().toLowerCase() === r.trim().toLowerCase())
-                 );
-                 if (hasRoomOverlap) {
-                   conflicts.push({ type: 'room', conflictingEntry: existing, ...info });
-                 }
+                const candRooms = cs.rooms || [];
+                const existRooms = es.rooms || [];
+                const hasRoomOverlap = candRooms.some((r) =>
+                  existRooms.some((er) => er.trim().toLowerCase() === r.trim().toLowerCase())
+                );
+                if (hasRoomOverlap) {
+                  conflicts.push({ type: 'room', conflictingEntry: existing, ...info });
+                }
               }
             }
           }
@@ -439,73 +464,131 @@ export function useTimetableStore(timetableId: string): TimetableStore {
 
       return conflicts;
     },
-    [entries],
+    [instances],
   );
 
-  /**
-   * Adds a new entry. Returns any detected conflicts.
-   * The entry is NOT added if conflicts exist.
-   */
-  const addEntry = useCallback(
+  const addBlueprint = useCallback(
     (entry: SubjectEntry): ConflictInfo[] => {
-      const existingMatch = entries.find(
-        (e) =>
-          e.subjectCode.trim().toLowerCase() === entry.subjectCode.trim().toLowerCase() &&
-          e.offerCode.trim().toLowerCase() === entry.offerCode.trim().toLowerCase() &&
-          e.subjectDescription.trim().toLowerCase() === entry.subjectDescription.trim().toLowerCase() &&
-          e.program.trim().toLowerCase() === entry.program.trim().toLowerCase() &&
-          e.year === entry.year &&
-          e.section.trim().toLowerCase() === entry.section.trim().toLowerCase() &&
-          (e.department || '').trim().toLowerCase() === (entry.department || '').trim().toLowerCase()
-      );
+      const existing = blueprints.find((e) => e.id === entry.id);
+      const nextBlueprints = existing
+        ? blueprints.map((e) => (e.id === entry.id ? entry : e))
+        : [entry, ...blueprints];
+      commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE);
+      return [];
+    },
+    [blueprints, instances, commitState],
+  );
 
-      let nextEntries = entries;
-      let targetEntry = entry;
+  const addInstance = useCallback(
+    (entry: SubjectEntry): ConflictInfo[] => {
+      const nextInstances = [entry, ...instances];
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE);
+      return detectConflicts(entry, nextInstances);
+    },
+    [blueprints, instances, commitState, detectConflicts],
+  );
 
-      if (existingMatch) {
-        targetEntry = {
-          ...existingMatch,
-          assignedTeacherName: entry.assignedTeacherName,
-          room: entry.room,
-          color: entry.color !== undefined ? entry.color : existingMatch.color,
-          schedules: [...existingMatch.schedules, ...entry.schedules],
-        };
-        nextEntries = entries.map((e) => (e.id === existingMatch.id ? targetEntry : e));
-      } else {
-        nextEntries = [entry, ...entries];
+  const updateInstance = useCallback(
+    (entry: SubjectEntry, editedScheduleId?: string): ConflictInfo[] => {
+      let nextInstances = instances.map((e) => (e.id === entry.id ? entry : e));
+
+      const links = new Map<string, string>();
+      for (const d of dynamicData) {
+        if (d.dataType === 'link') {
+          links.set(d.value, d.displayAs);
+        }
       }
 
-      commitState(nextEntries, null, DEFAULT_FORM_STATE);
-      return detectConflicts(targetEntry, nextEntries);
+      const connectedSubjectIds = new Set<string>();
+      const allConnectedKeys = new Set<string>();
+      const editedSchedule = editedScheduleId
+        ? entry.schedules.find(s => s.id === editedScheduleId)
+        : null;
+
+      for (const s of entry.schedules) {
+        if (editedScheduleId && s.id !== editedScheduleId) continue;
+        const key = `${entry.id}:${s.id}`;
+        const connected = getConnectedKeys(key, links);
+        for (const ck of connected) {
+          allConnectedKeys.add(ck);
+          const [subjId] = ck.split(':');
+          connectedSubjectIds.add(subjId);
+        }
+      }
+
+      if (allConnectedKeys.size > 1) {
+        nextInstances = nextInstances.map((e) => {
+          if (!connectedSubjectIds.has(e.id)) return e;
+          if (e.id === entry.id) return e;
+
+          let schedulesChanged = false;
+          const updatedSchedules = e.schedules.map((s) => {
+            const sk = `${e.id}:${s.id}`;
+          if (editedSchedule && allConnectedKeys.has(sk)) {
+            if (editedSchedule.assignedTeacherName !== s.assignedTeacherName) {
+              schedulesChanged = true;
+            }
+            return {
+              ...s,
+              assignedTeacherName: editedSchedule.assignedTeacherName,
+            };
+          }
+            return s;
+          });
+
+          return {
+            ...e,
+            subjectCode: entry.subjectCode,
+            offerCode: entry.offerCode,
+            subjectDescription: entry.subjectDescription,
+            assignedTeacherName: entry.assignedTeacherName,
+            department: entry.department,
+            program: entry.program,
+            year: entry.year,
+            section: entry.section,
+            color: entry.color,
+            ...(schedulesChanged ? { schedules: updatedSchedules } : {}),
+          };
+        });
+      }
+
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE);
+      return detectConflicts(entry, nextInstances);
     },
-    [detectConflicts, entries, commitState],
+    [blueprints, instances, commitState, detectConflicts, dynamicData],
   );
 
-  /**
-   * Replaces an existing entry by id. Returns conflicts.
-   */
-  const updateEntry = useCallback(
-    (entry: SubjectEntry): ConflictInfo[] => {
-      const nextEntries = entries.map((e) => (e.id === entry.id ? entry : e));
-      commitState(nextEntries, null, DEFAULT_FORM_STATE);
-      return detectConflicts(entry, nextEntries);
-    },
-    [detectConflicts, entries, commitState],
-  );
-
-  const deleteEntry = useCallback(
+  const deleteBlueprint = useCallback(
     (id: string): void => {
-      const nextEntries = entries.filter((e) => e.id !== id);
+      const nextBlueprints = blueprints.filter((e) => e.id !== id);
       const nextEditingEntryId = editingEntryId === id ? null : editingEntryId;
       const nextFormState = editingEntryId === id ? DEFAULT_FORM_STATE : formState;
-      commitState(nextEntries, nextEditingEntryId, nextFormState);
+      commitState(nextBlueprints, instances, nextEditingEntryId, nextFormState);
     },
-    [entries, editingEntryId, formState, commitState],
+    [blueprints, instances, editingEntryId, formState, commitState],
+  );
+
+  const deleteInstance = useCallback(
+    (id: string): void => {
+      const nextInstances = instances.filter((e) => e.id !== id);
+      const nextEditingEntryId = editingEntryId === id ? null : editingEntryId;
+      const nextFormState = editingEntryId === id ? DEFAULT_FORM_STATE : formState;
+
+      const linksToRemove = dynamicData.filter(
+        (d) => d.dataType === 'link' && (d.value.startsWith(`${id}:`) || d.displayAs.startsWith(`${id}:`))
+      );
+      for (const link of linksToRemove) {
+        deleteDynamicData(link.id);
+      }
+
+      commitState(blueprints, nextInstances, nextEditingEntryId, nextFormState);
+    },
+    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData],
   );
 
   const exportEntries = useCallback((): string => {
-    return JSON.stringify(entries, null, 2);
-  }, [entries]);
+    return JSON.stringify(instances, null, 2);
+  }, [instances]);
 
   const importEntries = useCallback(
     (jsonString: string): { success: boolean; error?: string } => {
@@ -516,33 +599,29 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         }
         for (const item of parsed) {
           if (
-            typeof item !== 'object' ||
-            item === null ||
-            !item.id ||
-            !item.subjectCode ||
-            !Array.isArray(item.schedules)
+            typeof item !== 'object' || item === null || !item.id || !item.subjectCode || !Array.isArray(item.schedules)
           ) {
             return { success: false, error: 'Invalid structure. Entries must contain id, subjectCode, and schedules.' };
           }
         }
-        persistEntries(parsed);
+        persistState(blueprints, parsed as SubjectEntry[]);
         return { success: true };
       } catch (e: unknown) {
         return { success: false, error: e instanceof Error ? e.message : 'Invalid JSON format.' };
       }
     },
-    [persistEntries],
+    [blueprints, persistState],
   );
 
   const mergeEntries = useCallback(
     (imported: SubjectEntry[]): { successCount: number; skippedCount: number; totalImported: number } => {
-      const currentList = [...entries];
+      const currentInstances = [...instances];
       let successCount = 0;
       let skippedCount = 0;
       const totalImported = imported.length;
 
       for (const entry of imported) {
-        const existingMatchIndex = currentList.findIndex(
+        const existingMatchIndex = currentInstances.findIndex(
           (e) =>
             e.subjectCode.trim().toLowerCase() === entry.subjectCode.trim().toLowerCase() &&
             e.offerCode.trim().toLowerCase() === entry.offerCode.trim().toLowerCase() &&
@@ -550,9 +629,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         );
 
         if (existingMatchIndex !== -1) {
-          const existingMatch = currentList[existingMatchIndex];
-
-          // Check if every incoming schedule already exists in the existing entry
+          const existingMatch = currentInstances[existingMatchIndex];
           const allSchedulesDuplicate = entry.schedules.every((impSched) =>
             existingMatch.schedules.some(
               (s) =>
@@ -562,8 +639,6 @@ export function useTimetableStore(timetableId: string): TimetableStore {
                 s.days.every((d) => impSched.days.includes(d))
             )
           );
-
-          // Check if the core metadata also fully matches
           const metaMatch =
             existingMatch.assignedTeacherName === entry.assignedTeacherName &&
             existingMatch.room === entry.room &&
@@ -571,13 +646,11 @@ export function useTimetableStore(timetableId: string): TimetableStore {
             existingMatch.year === entry.year &&
             existingMatch.section === entry.section;
 
-          // If fully duplicate (same meta + all schedules exist), skip entirely
           if (allSchedulesDuplicate && metaMatch) {
             skippedCount++;
             continue;
           }
 
-          // Partial match: merge in only the new schedules
           const mergedSchedules = [...existingMatch.schedules];
           for (const impSched of entry.schedules) {
             const hasDuplicate = mergedSchedules.some(
@@ -595,29 +668,27 @@ export function useTimetableStore(timetableId: string): TimetableStore {
             }
           }
 
-          const mergedEntry: SubjectEntry = {
+          currentInstances[existingMatchIndex] = {
             ...existingMatch,
             assignedTeacherName: entry.assignedTeacherName || existingMatch.assignedTeacherName,
             room: entry.room || existingMatch.room,
             color: entry.color !== undefined ? entry.color : existingMatch.color,
             schedules: mergedSchedules,
           };
-          currentList[existingMatchIndex] = mergedEntry;
           successCount++;
         } else {
-          const newEntry: SubjectEntry = {
+          currentInstances.push({
             ...entry,
             id: entry.id || Math.random().toString(36).slice(2) + Date.now().toString(36),
-          };
-          currentList.push(newEntry);
+          });
           successCount++;
         }
       }
 
-      persistEntries(currentList);
+      persistState(blueprints, currentInstances);
       return { successCount, skippedCount, totalImported };
     },
-    [entries, persistEntries]
+    [blueprints, instances, persistState]
   );
 
   const importSuggestions = useCallback(
@@ -684,7 +755,10 @@ export function useTimetableStore(timetableId: string): TimetableStore {
 
   const suggestions = useMemo(() => {
     const combinedEntries = [
-      ...entries,
+      ...blueprints.map((b) => ({
+        ...b,
+        schedules: [],
+      })),
       ...importedSuggestions.map((s, idx) => ({
         id: `imported-${idx}`,
         subjectCode: s.subjectCode,
@@ -694,7 +768,6 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         room: s.room,
         schedules: [],
         program: s.program || '',
-        programShorthand: s.programShorthand || '',
         year: s.year || 1,
         section: s.section || '',
         department: '',
@@ -703,14 +776,12 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     return {
       assignedTeacherNames: (() => {
         const seen = new Set<string>();
-        for (const entry of combinedEntries) {
+        for (const entry of [...blueprints, ...instances]) {
           const mainVal = (entry.assignedTeacherName || '').trim();
           if (mainVal) seen.add(mainVal);
-          if (entry.schedules) {
-            for (const s of entry.schedules) {
-              const schedVal = (s.assignedTeacherName || '').trim();
-              if (schedVal) seen.add(schedVal);
-            }
+          for (const s of entry.schedules || []) {
+            const schedVal = (s.assignedTeacherName || '').trim();
+            if (schedVal) seen.add(schedVal);
           }
         }
         return Array.from(seen).sort();
@@ -719,7 +790,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       offerCodes: uniqueValues(combinedEntries, (e) => e.offerCode),
       rooms: (() => {
         const seen = new Set<string>();
-        for (const entry of combinedEntries) {
+        for (const entry of [...blueprints, ...instances]) {
           const val = entry.room || '';
           if (val) {
             val.split(',').forEach((r) => {
@@ -727,14 +798,12 @@ export function useTimetableStore(timetableId: string): TimetableStore {
               if (trimmed) seen.add(trimmed);
             });
           }
-          if (entry.schedules) {
-            for (const s of entry.schedules) {
-              if (s.rooms) {
-                s.rooms.forEach((r) => {
-                  const trimmed = r.trim();
-                  if (trimmed) seen.add(trimmed);
-                });
-              }
+          for (const s of entry.schedules || []) {
+            if (s.rooms) {
+              s.rooms.forEach((r) => {
+                const trimmed = r.trim();
+                if (trimmed) seen.add(trimmed);
+              });
             }
           }
         }
@@ -742,25 +811,21 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       })(),
       subjectDescriptions: uniqueValues(combinedEntries, (e) => e.subjectDescription),
     };
-  }, [entries, importedSuggestions]);
+  }, [blueprints, instances, importedSuggestions]);
 
   const startEdit = useCallback(
     (id: string): void => {
-      const entry = entries.find((e) => e.id === id);
+      const entry = blueprints.find((e) => e.id === id);
       if (!entry) return;
 
       const newFormState: FormState = {
         subjectCode: entry.subjectCode,
         offerCode: entry.offerCode,
         subjectDescription: entry.subjectDescription,
-        room: entry.room ? entry.room.split(',').map((r) => r.trim()).filter(Boolean) : [],
+        room: [],
         colorRandom: !entry.color,
         color: entry.color || '#2B4C7E',
-        schedules: entry.schedules.map((s) => ({
-          days: s.days,
-          timeRange: [s.startTime, s.endTime],
-          rooms: s.rooms || (entry.room ? [entry.room] : []),
-        })),
+        schedules: [],
         program: entry.program || '',
         year: entry.year ? String(entry.year) : '1',
         section: entry.section || '',
@@ -770,7 +835,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       setEditingEntryIdState(id);
       setFormStateState(newFormState);
     },
-    [entries]
+    [blueprints]
   );
 
   const cancelEdit = useCallback((): void => {
@@ -785,12 +850,25 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     []
   );
 
+  const syncDynamicData = useCallback(async (data: DynamicData[]): Promise<void> => {
+    const db = await getDb();
+    await db.execute('DELETE FROM dynamic_data WHERE timetable_id = $1', [timetableId]);
+    for (const d of data) {
+      await db.execute(
+        'INSERT INTO dynamic_data (id, data_type, value, display_as, timetable_id) VALUES ($1, $2, $3, $4, $5)',
+        [d.id, d.dataType, d.value, d.displayAs, timetableId]
+      );
+    }
+  }, [timetableId]);
+
   const undo = useCallback((): void => {
     if (historyIndexRef.current > 0) {
       const oldState = historyRef.current[historyIndexRef.current];
       historyIndexRef.current -= 1;
       const newState = historyRef.current[historyIndexRef.current];
-      commitState(newState.entries, newState.editingEntryId, newState.formState, true);
+      commitState(newState.blueprints, newState.instances, newState.editingEntryId, newState.formState, true);
+      setDynamicData(newState.dynamicData);
+      void syncDynamicData(newState.dynamicData);
       updateHistoryState();
 
       window.dispatchEvent(
@@ -799,14 +877,16 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         })
       );
     }
-  }, [commitState, updateHistoryState]);
+  }, [commitState, syncDynamicData, updateHistoryState]);
 
   const redo = useCallback((): void => {
     if (historyIndexRef.current < historyRef.current.length - 1) {
       const oldState = historyRef.current[historyIndexRef.current];
       historyIndexRef.current += 1;
       const newState = historyRef.current[historyIndexRef.current];
-      commitState(newState.entries, newState.editingEntryId, newState.formState, true);
+      commitState(newState.blueprints, newState.instances, newState.editingEntryId, newState.formState, true);
+      setDynamicData(newState.dynamicData);
+      void syncDynamicData(newState.dynamicData);
       updateHistoryState();
 
       window.dispatchEvent(
@@ -815,17 +895,20 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         })
       );
     }
-  }, [commitState, updateHistoryState]);
+  }, [commitState, syncDynamicData, updateHistoryState]);
 
   return {
-    entries,
+    blueprints,
+    instances,
     hiddenDays,
     isLoading,
     filePath,
     updateFilePath,
-    addEntry,
-    updateEntry,
-    deleteEntry,
+    addBlueprint,
+    addInstance,
+    updateInstance,
+    deleteBlueprint,
+    deleteInstance,
     setHiddenDays,
     detectConflicts,
     importEntries,

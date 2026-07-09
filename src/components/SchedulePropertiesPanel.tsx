@@ -1,4 +1,4 @@
-import { Form, Input, Select, Button, TimePicker, Divider, Typography, Space, Modal } from 'antd';
+import { Form, Input, Select, Button, TimePicker, Divider, Typography, Space } from 'antd';
 import { SaveOutlined, CloseOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useEffect } from 'react';
 import dayjs from 'dayjs';
@@ -59,14 +59,6 @@ export function SchedulePropertiesPanel({
   }, [entry, schedule, form]);
 
   const handleFinish = (values: FormValues) => {
-    if (!values.rooms || values.rooms.length === 0) {
-      Modal.error({
-        title: 'Validation Error',
-        content: 'At least one room must be assigned to this schedule slot.',
-      });
-      return;
-    }
-
     const updatedSchedule: Schedule = {
       ...schedule,
       days: values.days,
@@ -243,10 +235,10 @@ export function SchedulePropertiesPanel({
             />
           </Form.Item>
 
-          <Form.Item name="rooms" label="Rooms" rules={[{ required: true }]}>
+          <Form.Item name="rooms" label="Rooms">
             <Select
               mode="multiple"
-              placeholder="Select rooms"
+              disabled
               options={roomsOptions}
             />
           </Form.Item>

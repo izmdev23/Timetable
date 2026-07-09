@@ -3,10 +3,10 @@ import {
   SaveOutlined,
   DownloadOutlined,
   UploadOutlined,
-  EyeOutlined,
   PlusOutlined,
   UndoOutlined,
-  RedoOutlined
+  RedoOutlined,
+  LinkOutlined,
 } from '@ant-design/icons';
 import type { DayOfWeek } from '../types';
 import { DAY_ORDER } from '../types';
@@ -22,9 +22,6 @@ interface RibbonToolbarProps {
   onSave: () => void;
   onSaveAs: () => void;
   onImportMerge: () => void;
-  onExportSuggestions: () => void;
-  onImportSuggestions: () => void;
-  onViewSuggestions: () => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
@@ -56,12 +53,10 @@ interface RibbonToolbarProps {
   onViewEndChange: (val: number) => void;
   timeOptions: { label: string; value: number }[];
 
-  // Room Timetable
-  activeRoom: string | null;
-  onActiveRoomChange: (room: string) => void;
-
   // App Actions
   onAddSubjectEntry: () => void;
+  linkingModeActive?: boolean;
+  onToggleLinkingMode?: () => void;
 
   // Dynamic Data Actions
   dynamicData: DynamicData[];
@@ -74,9 +69,6 @@ export function RibbonToolbar({
   onSave,
   onSaveAs,
   onImportMerge,
-  onExportSuggestions,
-  onImportSuggestions,
-  onViewSuggestions,
   canUndo,
   canRedo,
   onUndo,
@@ -107,13 +99,13 @@ export function RibbonToolbar({
   timeOptions,
 
   onAddSubjectEntry,
+  linkingModeActive,
+  onToggleLinkingMode,
 
   dynamicData,
   addDynamicData,
   deleteDynamicData,
   updateDynamicData,
-  activeRoom,
-  onActiveRoomChange,
 }: RibbonToolbarProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [form] = Form.useForm();
@@ -202,23 +194,7 @@ export function RibbonToolbar({
         <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>HISTORY</Text>
       </div>
 
-      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
 
-      {/* Autocomplete suggestions */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <Space size={3}>
-          <Tooltip title="Export Autocomplete Suggestions">
-            <Button icon={<DownloadOutlined />} onClick={onExportSuggestions} style={{ padding: '8px 10px' }} />
-          </Tooltip>
-          <Tooltip title="Import Autocomplete Suggestions">
-            <Button icon={<UploadOutlined />} onClick={onImportSuggestions} style={{ padding: '8px 10px' }} />
-          </Tooltip>
-          <Tooltip title="View Imported Autocomplete Suggestions">
-            <Button icon={<EyeOutlined />} onClick={onViewSuggestions} style={{ padding: '8px 10px' }} />
-          </Tooltip>
-        </Space>
-        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>SUGGESTIONS</Text>
-      </div>
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
 
@@ -239,6 +215,15 @@ export function RibbonToolbar({
             style={{ padding: '8px 12px', fontWeight: 500 }}
           >
             Add Data
+          </Button>
+          <Button
+            type={linkingModeActive ? 'primary' : 'default'}
+            danger={linkingModeActive}
+            icon={<LinkOutlined />}
+            onClick={onToggleLinkingMode}
+            style={{ padding: '8px 12px', fontWeight: 500 }}
+          >
+            Link
           </Button>
         </Space>
         <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>INSERT / CONFIG</Text>
@@ -344,66 +329,53 @@ export function RibbonToolbar({
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
 
       {/* Days & Time bounds */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <Space size={4}>
-          <Space size={1} style={{ display: 'inline-flex' }}>
-            {DAY_ORDER.map((day) => {
-              const isVisible = !hiddenDays.includes(day);
-              return (
-                <AntdCheckableTag
-                  key={day}
-                  checked={isVisible}
-                  onChange={(checked: boolean) => {
-                    if (checked) {
-                      onToggleDay(hiddenDays.filter((d) => d !== day));
-                    } else {
-                      onToggleDay([...hiddenDays, day]);
-                    }
-                  }}
-                  style={{
-                    border: '1px solid #D0D7E3',
-                    padding: '0 4px',
-                    fontSize: 9,
-                    borderRadius: 2,
-                    lineHeight: '18px',
-                    height: 20,
-                  }}
-                >
-                  {day}
-                </AntdCheckableTag>
-              );
-            })}
-          </Space>
-          <Divider type="vertical" style={{ margin: '0 2px' }} />
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+        <Space size={1} style={{ display: 'inline-flex' }}>
+          {DAY_ORDER.map((day) => {
+            const isVisible = !hiddenDays.includes(day);
+            return (
+              <AntdCheckableTag
+                key={day}
+                checked={isVisible}
+                onChange={(checked: boolean) => {
+                  if (checked) {
+                    onToggleDay(hiddenDays.filter((d) => d !== day));
+                  } else {
+                    onToggleDay([...hiddenDays, day]);
+                  }
+                }}
+                style={{
+                  border: '1px solid #D0D7E3',
+                  padding: '0 4px',
+                  fontSize: 9,
+                  borderRadius: 2,
+                  lineHeight: '16px',
+                  height: 18,
+                }}
+              >
+                {day}
+              </AntdCheckableTag>
+            );
+          })}
+        </Space>
+        <Space size={4} align="center" style={{ marginTop: 2 }}>
           <Select
+            size="small"
             style={{ width: 80 }}
             value={viewStart}
             onChange={onViewStartChange}
             options={timeOptions.slice(0, -1)}
           />
-          <Text style={{ fontSize: 11 }}>to</Text>
+          <Text style={{ fontSize: 10 }}>to</Text>
           <Select
+            size="small"
             style={{ width: 80 }}
             value={viewEnd}
             onChange={onViewEndChange}
             options={timeOptions.filter((opt) => opt.value > viewStart)}
           />
         </Space>
-        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>TIMETABLE WINDOW</Text>
-      </div>
-
-      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
-
-      {/* Room Timetable */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <Select
-          style={{ width: 140 }}
-          value={activeRoom}
-          onChange={onActiveRoomChange}
-          options={roomOptions.map((r) => ({ label: r, value: r }))}
-          placeholder="Select Room"
-        />
-        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>ROOM TIMETABLE</Text>
+        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, marginTop: 2 }}>TIMETABLE WINDOW</Text>
       </div>
 
       <Drawer

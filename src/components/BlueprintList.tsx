@@ -3,24 +3,20 @@ import { EditOutlined, DeleteOutlined, EyeOutlined, EyeInvisibleOutlined, SortAs
 import { useRef, memo, useState, useMemo } from 'react';
 import type { SubjectEntry } from '../types';
 import { colorForSubject } from '../theme';
-import { formatTeacherForDisplay } from '../utils/teacherName';
 
-interface SubjectTableProps {
-  entries: SubjectEntry[];
+interface BlueprintListProps {
+  blueprints: SubjectEntry[];
   onEdit: (entry: SubjectEntry) => void;
   onDelete: (id: string) => void;
   hiddenEntryIds: string[];
   onToggleHide: (id: string) => void;
   editingEntryId?: string | null;
-
-  // Search & Sort additions
   searchQuery: string;
   onSearchChange: (q: string) => void;
   searchResults: SubjectEntry[] | null;
   onDragStartCustom?: (entryId: string, clientX: number, clientY: number) => void;
 }
 
-// Subcomponent to highlight matching text
 function HighlightedText({ text, query }: { text: string; query: string }) {
   if (!query || !query.trim()) return <>{text}</>;
   const normalizedQuery = query.toLowerCase();
@@ -38,8 +34,8 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
   );
 }
 
-export const SubjectTable = memo(function SubjectTable({
-  entries,
+export const BlueprintList = memo(function BlueprintList({
+  blueprints,
   onEdit,
   onDelete,
   hiddenEntryIds,
@@ -49,27 +45,21 @@ export const SubjectTable = memo(function SubjectTable({
   onSearchChange,
   searchResults,
   onDragStartCustom,
-}: SubjectTableProps) {
+}: BlueprintListProps) {
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [sortOrder, setSortOrder] = useState<'az' | 'za' | 'none'>('none');
 
-  // Let's filter entries based on search & sorting
   const processedEntries = useMemo(() => {
-    // 1. Search filter (if search results are active, use them)
-    let list = (searchQuery.trim() !== '' && searchResults !== null) ? searchResults : entries;
+    let list = (searchQuery.trim() !== '' && searchResults !== null) ? searchResults : blueprints;
 
-    // 2. Sorting (by Subject Code)
     if (sortOrder === 'az') {
       list = [...list].sort((a, b) => a.subjectCode.localeCompare(b.subjectCode));
     } else if (sortOrder === 'za') {
       list = [...list].sort((a, b) => b.subjectCode.localeCompare(a.subjectCode));
     }
 
-    console.log("SubjectTable input entries:", entries);
-    console.log("SubjectTable searchResults:", searchResults, "query:", searchQuery);
-    console.log("SubjectTable processedEntries:", list);
     return list;
-  }, [entries, searchResults, searchQuery, sortOrder]);
+  }, [blueprints, searchResults, searchQuery, sortOrder]);
 
   const toggleSort = () => {
     setSortOrder((prev) => (prev === 'az' ? 'za' : prev === 'za' ? 'none' : 'az'));
@@ -84,15 +74,13 @@ export const SubjectTable = memo(function SubjectTable({
         background: '#FFFFFF',
       }}
     >
-      {/* Title */}
       <div style={{ padding: '12px 16px 4px 16px', fontWeight: 600, fontSize: '14px', color: '#1E293B' }}>
-        Subject List
+        Blueprint List
       </div>
 
-      {/* Search and Sort controls */}
       <div style={{ padding: '8px 12px', borderBottom: '1px solid #E4E9F0', display: 'flex', gap: 6, alignItems: 'center' }}>
         <Input
-          placeholder="Search subjects..."
+          placeholder="Search blueprints..."
           value={searchQuery}
           onChange={(e) => onSearchChange(e.target.value)}
           size="small"
@@ -110,7 +98,6 @@ export const SubjectTable = memo(function SubjectTable({
         </Button>
       </div>
 
-      {/* List content */}
       <div
         style={{
           display: 'flex',
@@ -124,7 +111,7 @@ export const SubjectTable = memo(function SubjectTable({
       >
         {processedEntries.length === 0 ? (
           <div style={{ padding: 24, textAlign: 'center' }}>
-            <Empty description="No entries found" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <Empty description="No blueprints found" image={Empty.PRESENTED_IMAGE_SIMPLE} />
           </div>
         ) : (
           processedEntries.map((entry) => {
@@ -165,7 +152,6 @@ export const SubjectTable = memo(function SubjectTable({
                   WebkitUserSelect: 'none',
                 }}
               >
-                {/* Top row: Subject Code, Offer Code, Actions */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                     <Tag
@@ -185,7 +171,6 @@ export const SubjectTable = memo(function SubjectTable({
                     </span>
                   </div>
 
-                  {/* Actions (Always clickable/enabled) */}
                   <div style={{ display: 'flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
                     <Button
                       type="text"
@@ -204,7 +189,7 @@ export const SubjectTable = memo(function SubjectTable({
                       style={{ color: '#2B4C7E', width: 24, height: 24, padding: 0 }}
                     />
                     <Popconfirm
-                      title="Delete this entry?"
+                      title="Delete this blueprint?"
                       okText="Delete"
                       okButtonProps={{ danger: true, size: 'small' }}
                       cancelButtonProps={{ size: 'small' }}
@@ -221,30 +206,19 @@ export const SubjectTable = memo(function SubjectTable({
                   </div>
                 </div>
 
-                {/* Description */}
                 <div style={{ fontSize: 12, fontWeight: 600, color: '#1E3560', lineHeight: 1.25 }}>
                   <HighlightedText text={entry.subjectDescription} query={searchQuery} />
                 </div>
 
-                {/* Teacher & Department */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: '#4A5B78' }}>
-                  <div>
-                    <span style={{ color: '#7A8BA8', marginRight: 4 }}>Teacher:</span>
+                {entry.department && (
+                  <div style={{ fontSize: 11, color: '#4A5B78' }}>
+                    <span style={{ color: '#7A8BA8', marginRight: 4 }}>Dept:</span>
                     <span style={{ fontWeight: 500 }}>
-                      <HighlightedText text={formatTeacherForDisplay(entry.assignedTeacherName) || 'Unassigned'} query={searchQuery} />
+                      <HighlightedText text={entry.department} query={searchQuery} />
                     </span>
                   </div>
-                  {entry.department && (
-                    <div>
-                      <span style={{ color: '#7A8BA8', marginRight: 4 }}>Dept:</span>
-                      <span style={{ fontWeight: 500 }}>
-                        <HighlightedText text={entry.department} query={searchQuery} />
-                      </span>
-                    </div>
-                  )}
-                </div>
+                )}
 
-                {/* Program/Year/Section */}
                 <div style={{ fontSize: 10, color: '#7A8BA8', display: 'flex', gap: 8 }}>
                   <span>Prog: <HighlightedText text={entry.program} query={searchQuery} /></span>
                   <span>Yr: <HighlightedText text={String(entry.year)} query={searchQuery} /></span>

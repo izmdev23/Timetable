@@ -3,10 +3,8 @@ import {
   Select,
   AutoComplete,
   Button,
-  TimePicker,
   Space,
   Alert,
-  Divider,
   Typography,
   Card,
   Row,
@@ -14,17 +12,13 @@ import {
   Checkbox,
   Modal,
 } from 'antd';
-import { PlusOutlined, DeleteOutlined, SaveOutlined, CloseOutlined } from '@ant-design/icons';
+import { SaveOutlined, CloseOutlined } from '@ant-design/icons';
 import { useState, useEffect } from 'react';
-import dayjs from 'dayjs';
-import type { SubjectEntry, Schedule, ConflictInfo, DayOfWeek, FormState } from '../types';
-import { DAY_ORDER } from '../types';
-import { formatTimeTo12Hr } from '../utils/time';
+import type { SubjectEntry, ConflictInfo, FormState } from '../types';
 
 const { Text } = Typography;
 
-interface SubjectFormProps {
-  /** Suggestions derived from existing entries for autocomplete */
+interface BlueprintFormProps {
   suggestions: {
     assignedTeacherNames: string[];
     subjectCodes: string[];
@@ -32,8 +26,7 @@ interface SubjectFormProps {
     rooms: string[];
     subjectDescriptions?: string[];
   };
-  /** Full list of existing entries — used to derive program/section suggestions */
-  entries: SubjectEntry[];
+  blueprints: SubjectEntry[];
   templates: Array<{
     subjectCode: string;
     offerCode: string;
@@ -45,11 +38,8 @@ interface SubjectFormProps {
     year?: number;
     section?: string;
   }>;
-  /** Called with the new/updated entry; returns any conflicts */
   onSubmit: (entry: SubjectEntry) => ConflictInfo[];
-  /** Populated when editing an existing entry */
   editingEntry?: SubjectEntry | null;
-  /** Called when the edit is cancelled */
   onCancelEdit?: () => void;
   formState: FormState;
   onFormStateChange: (state: FormState) => void;
@@ -60,14 +50,8 @@ interface FormValues {
   subjectCode: string;
   offerCode: string;
   subjectDescription: string;
-  room?: string[];
   colorRandom: boolean;
   color: string;
-  schedules: Array<{
-    days: DayOfWeek[];
-    timeRange: [dayjs.Dayjs, dayjs.Dayjs] | null;
-    rooms: string[];
-  }>;
   program: string;
   year: string;
   section: string;
@@ -89,23 +73,17 @@ const COLOR_PRESETS = [
   { label: 'Rose Wood', value: '#881337' },
 ];
 
-/** Generates a simple unique id string */
 function uid(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
 
-/** Converts a string array to AutoComplete options */
 function toOptions(values: string[]): { value: string }[] {
   return values.map((v) => ({ value: v }));
 }
 
-/**
- * Data entry form for creating and editing subject timetable entries.
- * Supports autocomplete from previous entries and shows inline conflict alerts.
- */
-export function SubjectForm({
+export function BlueprintForm({
   suggestions,
-  entries,
+  blueprints,
   templates,
   onSubmit,
   editingEntry,
@@ -113,15 +91,11 @@ export function SubjectForm({
   formState,
   onFormStateChange,
   dynamicData,
-}: SubjectFormProps) {
+}: BlueprintFormProps) {
   const [form] = Form.useForm<FormValues>();
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
   const colorRandom = Form.useWatch('colorRandom', form) ?? true;
 
-
-
-
-  // Populate form when formState from store changes
   useEffect(() => {
     const values: FormValues = {
       subjectCode: formState.subjectCode,
@@ -129,11 +103,6 @@ export function SubjectForm({
       subjectDescription: formState.subjectDescription,
       colorRandom: formState.colorRandom,
       color: formState.color,
-      schedules: (formState.schedules || []).map((s) => ({
-        days: s.days,
-        timeRange: s.timeRange ? [dayjs(s.timeRange[0], 'HH:mm'), dayjs(s.timeRange[1], 'HH:mm')] : null,
-        rooms: s.rooms || [],
-      })),
       program: formState.program,
       year: formState.year,
       section: formState.section,
@@ -143,7 +112,6 @@ export function SubjectForm({
     setConflicts([]);
   }, [formState, form]);
 
-  // Listen for undo/redo focus events to highlight the changed input fields
   useEffect(() => {
     const handleHistoryFocus = (e: Event) => {
       const customEvent = e as CustomEvent<{
@@ -169,16 +137,13 @@ export function SubjectForm({
         const oldVal = oldState.formState[key];
         const newVal = newState.formState[key];
         if (JSON.stringify(oldVal) !== JSON.stringify(newVal)) {
-          // Changed input! Focus the Ant Design Form field by ID
           setTimeout(() => {
-            const inputId = key;
-            const el = document.getElementById(inputId);
+            const el = document.getElementById(key);
             if (el) {
               el.focus();
               if (el instanceof HTMLInputElement) {
                 el.select();
               }
-              // Add pulse highlight style
               el.classList.add('highlight-pulse');
               setTimeout(() => el.classList.remove('highlight-pulse'), 1500);
             }
@@ -193,37 +158,15 @@ export function SubjectForm({
   }, []);
 
   function handleFinish(values: FormValues): void {
-    const schedules: Schedule[] = (values.schedules || [])
-      .filter((s) => s && s.days && s.days.length > 0 && s.timeRange)
-      .map((s) => ({
-        id: uid(),
-        days: s.days,
-        startTime: s.timeRange ? s.timeRange[0].format('HH:mm') : '',
-        endTime: s.timeRange ? s.timeRange[1].format('HH:mm') : '',
-        rooms: s.rooms || [],
-      }));
-
-    if (schedules.length > 0) {
-      for (const s of schedules) {
-        if (!s.rooms || s.rooms.length === 0) {
-          Modal.error({
-            title: 'Validation Error',
-            content: 'Each added schedule requires at least one room assigned to it.',
-          });
-          return;
-        }
-      }
-    }
-
     const entry: SubjectEntry = {
       id: editingEntry?.id ?? uid(),
       subjectCode: values.subjectCode.trim(),
       offerCode: values.offerCode.trim(),
       subjectDescription: values.subjectDescription.trim(),
-      assignedTeacherName: editingEntry?.assignedTeacherName || '',
-      room: schedules.flatMap((s) => s.rooms).filter(Boolean).join(', '),
+      assignedTeacherName: '',
+      room: '',
       color: values.colorRandom ? undefined : values.color,
-      schedules,
+      schedules: [],
       program: values.program,
       year: Number(values.year),
       section: values.section,
@@ -231,7 +174,7 @@ export function SubjectForm({
     };
 
     if (!editingEntry) {
-      const isDuplicate = entries.some((existing) => {
+      const isDuplicate = blueprints.some((existing) => {
         const fieldsMatch =
           existing.subjectCode.trim().toLowerCase() === entry.subjectCode.toLowerCase() &&
           existing.offerCode.trim().toLowerCase() === entry.offerCode.toLowerCase() &&
@@ -241,24 +184,13 @@ export function SubjectForm({
           existing.section.trim().toLowerCase() === entry.section.toLowerCase() &&
           (existing.department || '').trim().toLowerCase() === (entry.department || '').toLowerCase();
 
-        if (!fieldsMatch) return false;
-        if (existing.schedules.length !== entry.schedules.length) return false;
-
-        return entry.schedules.every((s) =>
-          existing.schedules.some(
-            (es) =>
-              es.startTime === s.startTime &&
-              es.endTime === s.endTime &&
-              es.days.length === s.days.length &&
-              es.days.every((d) => s.days.includes(d))
-          )
-        );
+        return fieldsMatch;
       });
 
       if (isDuplicate) {
         Modal.confirm({
-          title: 'Duplicate Entry Warning',
-          content: 'A subject entry with the exact same data already exists. Do you want to proceed and add this duplicate entry?',
+          title: 'Duplicate Blueprint Warning',
+          content: 'A blueprint with the exact same data already exists. Do you want to proceed and add this duplicate?',
           okText: 'Yes, Add Duplicate',
           cancelText: 'Cancel',
           onOk() {
@@ -290,13 +222,7 @@ export function SubjectForm({
       room: [],
       colorRandom: allValues.colorRandom ?? true,
       color: allValues.color || '#2B4C7E',
-      schedules: (allValues.schedules || []).map((s) => ({
-        days: s.days || [],
-        timeRange: s.timeRange
-          ? [s.timeRange[0].format('HH:mm'), s.timeRange[1].format('HH:mm')] as [string, string]
-          : null,
-        rooms: s.rooms || [],
-      })),
+      schedules: [],
       program: allValues.program || '',
       year: allValues.year || '1',
       section: allValues.section || '',
@@ -322,15 +248,12 @@ export function SubjectForm({
     }
   }
 
-
-
-
   return (
     <Card
       size="small"
       title={
         <Text strong style={{ fontSize: 13 }}>
-          {editingEntry ? 'Edit Subject' : 'Add Subject'}
+          {editingEntry ? 'Edit Blueprint' : 'Add Blueprint'}
         </Text>
       }
       style={{ marginBottom: 12 }}
@@ -348,7 +271,7 @@ export function SubjectForm({
               {conflicts.map((c, i) => (
                 <li key={i}>
                   <strong>{c.type === 'teacher' ? 'Teacher' : c.type === 'room' ? 'Room' : 'Time'} conflict</strong> on{' '}
-                  <strong>{c.day}</strong> {formatTimeTo12Hr(c.startTime)}–{formatTimeTo12Hr(c.endTime)} with{' '}
+                  <strong>{c.day}</strong> {c.startTime}–{c.endTime} with{' '}
                   <em>
                     {c.conflictingEntry.subjectCode} ({c.conflictingEntry.assignedTeacherName || 'Unassigned'},{' '}
                     {c.conflictingEntry.room})
@@ -499,95 +422,6 @@ export function SubjectForm({
           </Col>
         </Row>
 
-        <Divider style={{ margin: '8px 0', fontSize: 12 }}>Schedules</Divider>
-
-        <Form.List
-          name="schedules"
-          initialValue={[]}
-        >
-          {(fields, { add, remove }, { errors }) => (
-            <>
-              {fields.map(({ key, name }) => (
-                <div key={key} style={{ border: '1px solid #E4E9F0', borderRadius: 4, padding: 8, marginBottom: 8, background: '#FAFAFA' }}>
-                  <Row gutter={8} align="middle">
-                    <Col span={10}>
-                      <Form.Item
-                        name={[name, 'days']}
-                        label="Days"
-                        rules={[{ required: true, message: 'Select days' }]}
-                        style={{ marginBottom: 0 }}
-                      >
-                        <Select
-                          mode="multiple"
-                          placeholder="Select days"
-                          options={DAY_ORDER.map((d) => ({ label: d, value: d }))}
-                          maxTagCount={3}
-                        />
-                      </Form.Item>
-                    </Col>
-                    <Col span={12}>
-                      <Form.Item
-                        name={[name, 'timeRange']}
-                        label="Time Range"
-                        rules={[{ required: true, message: 'Set time range' }]}
-                        style={{ marginBottom: 0 }}
-                      >
-                        <TimePicker.RangePicker
-                          format="hh:mm A"
-                          use12Hours
-                          minuteStep={5}
-                          style={{ width: '100%' }}
-                        />
-                      </Form.Item>
-                    </Col>
-                    <Col span={2} style={{ textAlign: 'right' }}>
-                      {fields.length > 1 && (
-                        <Button
-                          type="text"
-                          danger
-                          icon={<DeleteOutlined />}
-                          onClick={() => remove(name)}
-                        />
-                      )}
-                    </Col>
-                  </Row>
-                  <Row gutter={8} style={{ marginTop: 8 }}>
-                    <Col span={24}>
-                      <Form.Item
-                        name={[name, 'rooms']}
-                        label="Assign Rooms"
-                        rules={[{ required: true, message: 'Assign at least one room' }]}
-                        style={{ marginBottom: 0 }}
-                      >
-                        <Select
-                          mode="tags"
-                          tokenSeparators={[',']}
-                          placeholder="Assign multiple rooms (e.g. Rm 101, Rm 102)"
-                          options={suggestions.rooms.map((r) => ({ label: r, value: r }))}
-                          style={{ width: '100%' }}
-                        />
-                      </Form.Item>
-                    </Col>
-                  </Row>
-                </div>
-              ))}
-
-              <Form.ErrorList errors={errors} />
-
-              <Button
-                type="dashed"
-                onClick={() => add({ days: [], timeRange: null, rooms: [] })}
-                icon={<PlusOutlined />}
-                size="small"
-                style={{ marginTop: 2, marginBottom: 8 }}
-                block
-              >
-                Add Schedule Slot
-              </Button>
-            </>
-          )}
-        </Form.List>
-
         <Space style={{ width: '100%', justifyContent: 'flex-end' }}>
           {editingEntry && (
             <Button size="small" icon={<CloseOutlined />} onClick={handleCancel}>
@@ -595,7 +429,7 @@ export function SubjectForm({
             </Button>
           )}
           <Button type="primary" htmlType="submit" size="small" icon={<SaveOutlined />}>
-            {editingEntry ? 'Update' : 'Add Subject'}
+            {editingEntry ? 'Update' : 'Add Blueprint'}
           </Button>
         </Space>
       </Form>
