@@ -68,6 +68,11 @@ async fn save_file_bytes(path: String, bytes: Vec<u8>) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+    tokio::fs::read(&path).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn read_text_file(path: String) -> Result<String, String> {
     tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())
 }
@@ -83,6 +88,22 @@ fn resolve_default_path(app: tauri::AppHandle, filename: String) -> Result<Strin
     let doc_dir = app.path().document_dir().map_err(|e| e.to_string())?;
     let full_path = doc_dir.join(filename);
     Ok(full_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_opened_file() -> Option<String> {
+    let args: Vec<String> = std::env::args().collect();
+    // Skip the first arg (the executable path), look for a .ttcl file argument
+    for arg in args.iter().skip(1) {
+        if arg.to_lowercase().ends_with(".ttcl") {
+            return Some(arg.clone());
+        }
+        // Also check if it was passed as --file=path.ttcl
+        if let Some(value) = arg.strip_prefix("--file=") {
+            return Some(value.to_string());
+        }
+    }
+    None
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -119,9 +140,11 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             save_file_bytes,
-            read_text_file,
-            file_exists,
-            resolve_default_path
+    read_text_file,
+    read_file_bytes,
+    file_exists,
+            resolve_default_path,
+            get_opened_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

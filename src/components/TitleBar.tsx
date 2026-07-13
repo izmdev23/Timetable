@@ -14,10 +14,10 @@ import {
   UndoOutlined,
   RedoOutlined,
   ImportOutlined,
+  ExportOutlined,
 } from "@ant-design/icons";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
 import Database from "@tauri-apps/plugin-sql";
 import type { TimetableMeta } from "../types";
 
@@ -28,14 +28,22 @@ interface TitleBarProps {
   timetableName?: string;
   /** Called to open a timetable for editing */
   onOpenTimetable?: (meta: TimetableMeta) => void;
+  /** Called to open a .ttcl collection file */
+  onOpenCollection?: () => void;
   /** Called to close the open timetable (go back to home) */
   onCloseTimetable?: () => void;
   /** Called to trigger File > Save As (XLSX export) */
   onSaveAs?: () => void;
   /** Called to trigger File > Save (JSON export) */
   onSave?: () => void;
+  /** Called to trigger Export JSON Data */
+  onExportJson?: () => void;
+  /** Called to trigger Export Room Excel */
+  onExportExcelRoom?: () => void;
   /** Called to trigger Import and Merge */
   onImportMerge?: () => void;
+  /** Called to trigger Import Blueprints from Excel */
+  onImportExcel?: () => void;
   /** Called to open the Preferences page */
   onOpenPreferences?: () => void;
   onUndo?: () => void;
@@ -52,7 +60,10 @@ export function TitleBar({
   onCloseTimetable,
   onSaveAs,
   onSave,
+  onExportJson,
+  onExportExcelRoom,
   onImportMerge,
+  onImportExcel,
   onOpenPreferences,
   onUndo,
   onRedo,
@@ -106,48 +117,14 @@ export function TitleBar({
   async function handleOpen(): Promise<void> {
     try {
       const filePath = await openDialog({
-        title: "Open Timetable JSON",
-        filters: [{ name: "JSON", extensions: ["json"] }],
+        title: "Open Timetable Collection",
+        filters: [{ name: "Timetable Collection", extensions: ["ttcl"] }],
         multiple: false,
         directory: false,
       });
       if (!filePath || typeof filePath !== "string") return;
-
-      const content = await invoke<string>("read_text_file", { path: filePath });
-      const parsed = JSON.parse(content);
-
-      let entries: unknown[] = [];
-      let dynamicData: Array<{ id?: string; dataType: string; value: string; displayAs: string }> = [];
-
-      if (Array.isArray(parsed)) {
-        entries = parsed;
-      } else if (parsed && typeof parsed === "object" && Array.isArray(parsed.entries)) {
-        entries = parsed.entries;
-        if (Array.isArray(parsed.dynamicData)) {
-          dynamicData = parsed.dynamicData;
-        }
-      } else {
-        throw new Error("Invalid timetable JSON");
-      }
-
-      const fileName = filePath.split(/[\\\/]/).pop()?.replace(/\.json$/i, "") ?? "Imported";
-      const db = await Database.load("sqlite:timetable.db");
-      const id = crypto.randomUUID();
-      const now = new Date().toISOString();
-      await db.execute(
-        "INSERT INTO timetables (id, name, entries_json, entry_count, created_at, updated_at, hidden_days) VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        [id, fileName, JSON.stringify(entries), entries.length, now, now, "[\"Sun\"]"],
-      );
-
-      for (const item of dynamicData) {
-        const itemId = item.id || (Math.random().toString(36).slice(2) + Date.now().toString(36));
-        await db.execute(
-          "INSERT INTO dynamic_data (id, data_type, value, display_as, timetable_id) VALUES ($1, $2, $3, $4, $5)",
-          [itemId, item.dataType, item.value, item.displayAs, id]
-        );
-      }
-      const meta: TimetableMeta = { id, name: fileName, entryCount: entries.length, createdAt: now, updatedAt: now, hiddenDays: ["Sun"] };
-      onOpenTimetable?.(meta);
+      // The parent (App.tsx) handles the actual open via collection context
+      window.dispatchEvent(new CustomEvent('titlebar:open-collection', { detail: { path: filePath } }));
     } catch (e: unknown) {
       messageApi.error(`Open failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -161,9 +138,18 @@ export function TitleBar({
       if (isMax) await win.unmaximize();
       else await win.maximize();
     } else {
-      await win.close();
+      window.dispatchEvent(new CustomEvent('titlebar:before-close'));
     }
   }
+
+  useEffect(() => {
+    const handleConfirmClose = () => {
+      const win = getCurrentWindow();
+      win.close();
+    };
+    window.addEventListener('titlebar:confirm-close', handleConfirmClose);
+    return () => window.removeEventListener('titlebar:confirm-close', handleConfirmClose);
+  }, []);
 
   // Render a menu label with an optional right-aligned shortcut hint
   function label(text: string, shortcut?: string): React.ReactNode {
@@ -184,7 +170,20 @@ export function TitleBar({
     { key: "close",     label: label("Close",        "Ctrl+Q"), icon: <CloseOutlined />,      disabled: !isTimetable, onClick: onCloseTimetable },
     { key: "save",      label: label("Save",         "Ctrl+S"), icon: <SaveOutlined />,       disabled: !isTimetable, onClick: onSave },
     { key: "save-as",   label: label("Save As…", "Ctrl+Shift+S"), icon: <DownloadOutlined />,   disabled: !isTimetable, onClick: onSaveAs },
-    { key: "import-merge", label: label("Import & Merge JSON…"), icon: <ImportOutlined />,       disabled: !isTimetable, onClick: onImportMerge },
+    {
+      key: "import", label: label("Import"), icon: <ImportOutlined />, disabled: !isTimetable,
+      children: [
+        { key: "import-json", label: label("Import Collection Data (JSON)"), onClick: onImportMerge },
+        { key: "import-excel", label: label("Import Blueprints from Excel"), onClick: onImportExcel },
+      ],
+    },
+    {
+      key: "export", label: label("Export"), icon: <ExportOutlined />, disabled: !isTimetable,
+      children: [
+        { key: "export-json", label: label("Export Collection Data (JSON)"), onClick: onExportJson },
+        { key: "export-excel-room", label: label("Export Room Timetable (Excel)"), onClick: onExportExcelRoom },
+      ],
+    },
     { type: "divider" },
     { key: "undo",      label: label("Undo",         "Ctrl+Z"), icon: <UndoOutlined />,       disabled: !canUndo, onClick: onUndo },
     { key: "redo",      label: label("Redo",         "Ctrl+Shift+Z"), icon: <RedoOutlined />, disabled: !canRedo, onClick: onRedo },
@@ -197,7 +196,7 @@ export function TitleBar({
     height: 32,
     background: "transparent",
     border: "none",
-    color: "#8BA8D4",
+    color: "#7A8BA8",
     cursor: "pointer",
     display: "flex",
     alignItems: "center",
@@ -215,14 +214,14 @@ export function TitleBar({
         data-tauri-drag-region
         style={{
           height: 32,
-          background: "#1E3560",
+          background: "#FFFFFF",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
           userSelect: "none",
           flexShrink: 0,
           cursor: "default",
-          boxShadow: "0 1px 6px rgba(0,0,0,0.3)",
+          boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
         }}
       >
         {/* Left: File menu + breadcrumb */}
@@ -233,7 +232,7 @@ export function TitleBar({
                 style={{
                   background: "transparent",
                   border: "none",
-                  color: "#C8D8F0",
+                  color: "#1A2640",
                   fontSize: 12,
                   fontWeight: 500,
                   cursor: "pointer",
@@ -244,7 +243,7 @@ export function TitleBar({
                   gap: 5,
                   transition: "background 0.15s",
                 }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(255,255,255,0.1)"; }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(0,0,0,0.05)"; }}
                 onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
               >
                 <FileOutlined style={{ fontSize: 11 }} /> File
@@ -254,11 +253,11 @@ export function TitleBar({
 
           {/* Breadcrumb — pointer-events none so drag falls through to bar background */}
           <div style={{ paddingLeft: 8, display: "flex", alignItems: "center", gap: 5, pointerEvents: "none" }}>
-            <span style={{ color: "#8BA8D4", fontSize: 12, fontWeight: 600 }}>Timetable</span>
+            <span style={{ color: "#7A8BA8", fontSize: 12, fontWeight: 600 }}>Timetable</span>
             {timetableName && (
               <>
-                <span style={{ color: "#4A6A9A", fontSize: 12 }}>›</span>
-                <span style={{ color: "#D0E0F5", fontSize: 12, fontWeight: 500 }}>{timetableName}</span>
+                <span style={{ color: "#D0D7E3", fontSize: 12 }}>›</span>
+                <span style={{ color: "#1A2640", fontSize: 12, fontWeight: 500 }}>{timetableName}</span>
               </>
             )}
           </div>
@@ -274,13 +273,13 @@ export function TitleBar({
               style={winBtnStyle}
               onMouseEnter={(e) => {
                 const btn = e.currentTarget as HTMLButtonElement;
-                btn.style.background = action === "close" ? "#C42B1C" : "rgba(255,255,255,0.1)";
-                btn.style.color = "#FFFFFF";
+                btn.style.background = action === "close" ? "#C42B1C" : "rgba(0,0,0,0.06)";
+                btn.style.color = action === "close" ? "#FFFFFF" : "#1A2640";
               }}
               onMouseLeave={(e) => {
                 const btn = e.currentTarget as HTMLButtonElement;
                 btn.style.background = "transparent";
-                btn.style.color = "#8BA8D4";
+                btn.style.color = "#7A8BA8";
               }}
             >
               {action === "minimize" && <MinusOutlined />}

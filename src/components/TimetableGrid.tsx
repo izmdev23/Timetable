@@ -1,6 +1,7 @@
-import { useMemo, useState, useEffect, memo } from 'react';
+import { useMemo, useState, useEffect, memo, useRef } from 'react';
 import { Typography, Tooltip, Popover, Dropdown } from 'antd';
-import { DeleteOutlined, AimOutlined, DisconnectOutlined } from '@ant-design/icons';
+import { DeleteOutlined, AimOutlined, DisconnectOutlined, SwapOutlined, CopyOutlined } from '@ant-design/icons';
+import gsap from 'gsap';
 import type { SubjectEntry, DayOfWeek, Schedule } from '../types';
 import { DAY_ORDER } from '../types';
 import { colorForSubject } from '../theme';
@@ -15,13 +16,9 @@ interface TimetableGridProps {
   viewStart: number;
   viewEnd: number;
   bandedRows: boolean;
-  /** ID of the entry currently being edited */
   editingEntryId?: string | null;
-  /** Called when the user clicks empty space to clear editing focus */
   onCancelEdit?: () => void;
-  /** Called when schedule block is dragged and snapped to a new position */
   onUpdateEntry?: (entry: SubjectEntry) => void;
-  /** Called to delete an entry entirely */
   onDeleteEntry?: (id: string) => void;
   onDropEntry?: (entryId: string, day: DayOfWeek, startMin: number, room: string) => void;
   onDeleteSchedule?: (entryId: string, scheduleId: string) => void;
@@ -31,6 +28,13 @@ interface TimetableGridProps {
   linkingHighlightedKeys?: Set<string> | null;
   linkingModeActive?: boolean;
   onUnlinkBlock?: (blockKey: string) => void;
+  onMoveRoom?: (blockKey: string) => void;
+  selectedBlockKeys: Set<string>;
+  onToggleSelectBlock: (blockKey: string) => void;
+  onClearSelection: () => void;
+  onCopyBlocks: (blockKeys: string[]) => void;
+  onPasteBlocks: () => void;
+  canPaste: boolean;
 }
 
 interface SlotEntry {
@@ -41,37 +45,26 @@ interface SlotEntry {
   schedule: Schedule;
 }
 
-/** Converts "HH:mm" to total minutes */
 function toMin(time: string): number {
   const parts = time.split(':');
   return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
 }
 
-/** Converts minutes to "HH:mm" 24-hour format */
 function minutesTo24Hr(min: number): string {
   const h = Math.floor(min / 60).toString().padStart(2, '0');
   const m = (min % 60).toString().padStart(2, '0');
   return `${h}:${m}`;
 }
 
-/** Converts minutes to display string "hh:mm AM/PM" */
 function toTime(min: number): string {
   return minutesTo12Hr(min);
 }
 
-const ROW_HEIGHT = 36; // px per 30-minute slot
-const COL_WIDTH = 130; // px per day column
-const TIME_COL_WIDTH = 72; // px for the time label column (widened for AM/PM format)
-const SLOT_INTERVAL = 30; // minutes per row
+const ROW_HEIGHT = 36;
+const COL_WIDTH = 130;
+const TIME_COL_WIDTH = 72;
+const SLOT_INTERVAL = 30;
 
-
-
-/**
- * Weekly timetable grid rendered as an absolutely-positioned overlay layout.
- * Displays time slots corresponding to the selected view range (e.g., 07:30 to 20:00).
- * Displays all days Monday to Sunday in X axis.
- * Supports day visibility toggles (hidden days drawn with 25% opacity).
- */
 export const TimetableGrid = memo(function TimetableGrid({
   entries,
   hiddenDays,
@@ -90,8 +83,35 @@ export const TimetableGrid = memo(function TimetableGrid({
   linkingHighlightedKeys,
   linkingModeActive,
   onUnlinkBlock,
+  onMoveRoom,
+  selectedBlockKeys,
+  onToggleSelectBlock,
+  onClearSelection,
+  onCopyBlocks,
+  onPasteBlocks,
+  canPaste,
 }: TimetableGridProps) {
-  // Listen for undo/redo events to scroll and highlight the affected schedule block
+  const selectedBlockKeysRef = useRef(selectedBlockKeys);
+  selectedBlockKeysRef.current = selectedBlockKeys;
+
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
+
+  const viewStartRef = useRef(viewStart);
+  viewStartRef.current = viewStart;
+
+  const viewEndRef = useRef(viewEnd);
+  viewEndRef.current = viewEnd;
+
+  const onUpdateEntryRef = useRef(onUpdateEntry);
+  onUpdateEntryRef.current = onUpdateEntry;
+
+  const onToggleSelectBlockRef = useRef(onToggleSelectBlock);
+  onToggleSelectBlockRef.current = onToggleSelectBlock;
+
+  const onClearSelectionRef = useRef(onClearSelection);
+  onClearSelectionRef.current = onClearSelection;
+
   useEffect(() => {
     const handleHistoryFocus = (e: Event) => {
       const customEvent = e as CustomEvent<{
@@ -106,7 +126,6 @@ export const TimetableGrid = memo(function TimetableGrid({
       let affectedEntryId: string | null = null;
       let affectedScheduleId: string | null = null;
 
-      // Find added or modified entry and schedule
       for (const newEntry of newEntries) {
         const oldEntry = oldEntries.find((ent) => ent.id === newEntry.id);
         if (!oldEntry) {
@@ -146,166 +165,342 @@ export const TimetableGrid = memo(function TimetableGrid({
     window.addEventListener('timetable:history-focus', handleHistoryFocus);
     return () => window.removeEventListener('timetable:history-focus', handleHistoryFocus);
   }, []);
+
+  useEffect(() => {
+    const handleGridKeyDown = (e: KeyboardEvent) => {
+      const tag = (document.activeElement?.tagName ?? '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea') return;
+
+      if (e.key === 'Escape') {
+        onClearSelection();
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+        e.preventDefault();
+        const allKeys = new Set<string>();
+        for (const entry of entries) {
+          for (const sched of entry.schedules) {
+            for (const _ of sched.days) {
+              allKeys.add(`${entry.id}:${sched.id}`);
+            }
+          }
+        }
+        allKeys.forEach(key => {
+          if (!selectedBlockKeys.has(key)) onToggleSelectBlock(key);
+        });
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'c') {
+        if (selectedBlockKeys.size > 0) {
+          e.preventDefault();
+          onCopyBlocks(Array.from(selectedBlockKeys));
+        }
+        return;
+      }
+
+      if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
+        if (canPaste) {
+          e.preventDefault();
+          onPasteBlocks();
+        }
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handleGridKeyDown);
+    return () => window.removeEventListener('keydown', handleGridKeyDown);
+  }, [selectedBlockKeys, onClearSelection, onToggleSelectBlock, onCopyBlocks, onPasteBlocks, canPaste, entries]);
+
   const [activePopoverKey, setActivePopoverKey] = useState<string | null>(null);
 
-  const [dragState, setDragState] = useState<{
-    entry: SubjectEntry;
-    schedule: Schedule;
-    originalDay: DayOfWeek;
-    currentDay: DayOfWeek;
-    originalStartMin: number;
-    currentStartMin: number;
-    duration: number;
+  // Drag state (refs — no React re-renders during drag)
+  const dragRef = useRef<{
+    blockIds: string[];
+    initialDays: DayOfWeek[];
+    initialStartMins: number[];
+    durations: number[];
+    entryIds: string[];
+    scheduleIds: string[];
+    colors: string[];
     startX: number;
     startY: number;
-    offsetX: number;
-    offsetY: number;
   } | null>(null);
 
+  const gridContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Ghost elements for drop preview during drag
+  const ghostElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // Inject ghost pulse keyframes once
   useEffect(() => {
-    if (!dragState) return;
+    const style = document.createElement('style');
+    style.id = 'timetable-grid-ghost-style';
+    style.textContent = `@keyframes ghostPulse{0%,100%{background:rgba(59,130,246,0.08)}50%{background:rgba(59,130,246,0.25)}}.ghost-pulse{animation:ghostPulse 1s ease-in-out infinite}`;
+    document.head.appendChild(style);
+    return () => style.remove();
+  }, []);
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const deltaX = e.pageX - dragState.startX;
-      const deltaY = e.pageY - dragState.startY;
+  // Helper: compute drop position for a block during drag
+  const computeDropPosition = (initialDay: DayOfWeek, initialStartMin: number, duration: number, dayShift: number, slotShift: number, vs: number, ve: number) => {
+    const origIdx = DAY_ORDER.indexOf(initialDay);
+    let newIdx = origIdx + dayShift;
+    newIdx = Math.max(0, Math.min(DAY_ORDER.length - 1, newIdx));
+    let startMin = initialStartMin + slotShift * 30;
+    startMin = Math.max(vs, Math.min(ve - duration, startMin));
+    return { day: DAY_ORDER[newIdx], top: ((startMin - vs) / 30) * ROW_HEIGHT };
+  };
 
-      const dayShift = Math.round(deltaX / COL_WIDTH);
-      const originalDayIdx = DAY_ORDER.indexOf(dragState.originalDay);
-      let newDayIdx = originalDayIdx + dayShift;
-      newDayIdx = Math.max(0, Math.min(DAY_ORDER.length - 1, newDayIdx));
-      const newDay = DAY_ORDER[newDayIdx];
-
-      const slotShift = Math.round(deltaY / ROW_HEIGHT);
-      let newStartMin = dragState.originalStartMin + slotShift * 30;
-      newStartMin = Math.max(viewStart, Math.min(viewEnd - dragState.duration, newStartMin));
-
-      setDragState((prev) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          currentDay: newDay,
-          currentStartMin: newStartMin,
-          offsetX: deltaX,
-          offsetY: deltaY,
-        };
-      });
-    };
-
-    const handleMouseUp = () => {
-      if (dragState) {
-        const { entry, schedule, originalDay, currentDay, currentStartMin, duration } = dragState;
-        const newStartTime = minutesTo24Hr(currentStartMin);
-        const newEndTime = minutesTo24Hr(currentStartMin + duration);
-
-        const updatedSchedules = entry.schedules.map((s) => {
-          if (s.id === schedule.id) {
-            const daysCopy = s.days.map((d) => (d === originalDay ? currentDay : d));
-            const uniqueDays = Array.from(new Set(daysCopy));
-            return {
-              ...s,
-              days: uniqueDays,
-              startTime: newStartTime,
-              endTime: newEndTime,
-            };
-          }
-          return s;
-        });
-
-        const updatedEntry: SubjectEntry = {
-          ...entry,
-          schedules: updatedSchedules,
-        };
-
-        onUpdateEntry?.(updatedEntry);
-      }
-      setDragState(null);
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [dragState, viewStart, viewEnd, onUpdateEntry]);
-
-  const [resizeState, setResizeState] = useState<{
-    entry: SubjectEntry;
-    schedule: Schedule;
-    day: DayOfWeek;
-    edge: 'top' | 'bottom';
-    originalStartMin: number;
-    originalEndMin: number;
-    currentStartMin: number;
-    currentEndMin: number;
+  // Marquee state (refs)
+  const marqueeElRef = useRef<HTMLDivElement | null>(null);
+  const marqueeDataRef = useRef<{
+    startX: number;
     startY: number;
+    mode: 'add' | 'subtract' | 'replace';
+    container: HTMLDivElement;
   } | null>(null);
 
+  // Global mousemove/mouseup for drag + marquee
   useEffect(() => {
-    if (!resizeState) return;
-
     const handleMouseMove = (e: MouseEvent) => {
-      const deltaY = e.pageY - resizeState.startY;
-      const slotShift = Math.round(deltaY / ROW_HEIGHT);
-      const minutesShift = slotShift * 30;
+      // Handle drag
+      const d = dragRef.current;
+      if (d) {
+        const deltaX = e.pageX - d.startX;
+        const deltaY = e.pageY - d.startY;
+        const dayShift = Math.round(deltaX / COL_WIDTH);
+        const slotShift = Math.round(deltaY / ROW_HEIGHT);
+        const vs = viewStartRef.current;
+        const ve = viewEndRef.current;
 
-      let newStartMin = resizeState.originalStartMin;
-      let newEndMin = resizeState.originalEndMin;
+        for (let i = 0; i < d.entryIds.length; i++) {
+          const eId = d.entryIds[i];
+          const sId = d.scheduleIds[i];
+          const key = `${eId}:${sId}`;
 
-      if (resizeState.edge === 'top') {
-        newStartMin = resizeState.originalStartMin + minutesShift;
-        newStartMin = Math.max(viewStart, Math.min(newEndMin - 30, newStartMin));
-      } else {
-        newEndMin = resizeState.originalEndMin + minutesShift;
-        newEndMin = Math.min(viewEnd, Math.max(newStartMin + 30, newEndMin));
+          // Move original block with cursor + dim
+          const el = document.getElementById(`grid-block-${eId}-${sId}`);
+          if (el) gsap.set(el, { x: deltaX, y: deltaY, opacity: 0.3 });
+
+          // Compute target drop position
+          const { day: newDay, top: ghostTop } = computeDropPosition(
+            d.initialDays[i], d.initialStartMins[i], d.durations[i],
+            dayShift, slotShift, vs, ve
+          );
+
+          // Create or reuse ghost element inside target day column
+          let ghost = ghostElsRef.current.get(key);
+          if (!ghost) {
+            ghost = document.createElement('div');
+            ghost.className = 'ghost-pulse';
+            ghost.style.cssText = [
+              'position: absolute',
+              'pointer-events: none',
+              'z-index: 99998',
+              `border: 2px dashed ${d.colors[i]}`,
+              'border-radius: 3px',
+              'background: rgba(59,130,246,0.08)',
+              'opacity: 0.85',
+              'box-sizing: border-box',
+            ].join(';');
+            ghostElsRef.current.set(key, ghost);
+          }
+
+          const dayCol = document.querySelector(`[data-day-column="${newDay}"]`);
+          if (dayCol && ghost.parentElement !== dayCol) {
+            if (ghost.parentElement) ghost.remove();
+            dayCol.appendChild(ghost);
+          }
+
+          if (ghost.parentElement) {
+            const heightPx = (d.durations[i] / 30) * ROW_HEIGHT;
+            gsap.set(ghost, { top: ghostTop + 1, left: 2, right: 2, height: Math.max(heightPx - 2, 20) });
+          }
+        }
       }
 
-      setResizeState((prev) => {
-        if (!prev) return null;
-        return {
-          ...prev,
-          currentStartMin: newStartMin,
-          currentEndMin: newEndMin,
-        };
-      });
+      // Handle marquee
+      const md = marqueeDataRef.current;
+      if (md) {
+        const x = Math.min(md.startX, e.clientX);
+        const y = Math.min(md.startY, e.clientY);
+        const w = Math.abs(e.clientX - md.startX);
+        const h = Math.abs(e.clientY - md.startY);
+        const rect = md.container.getBoundingClientRect();
+        gsap.set(marqueeElRef.current, {
+          x: x - rect.left + md.container.scrollLeft,
+          y: y - rect.top + md.container.scrollTop,
+          width: w,
+          height: h,
+        });
+      }
     };
 
-    const handleMouseUp = () => {
-      if (resizeState) {
-        const { entry, schedule, currentStartMin, currentEndMin } = resizeState;
-        const newStartTime = minutesTo24Hr(currentStartMin);
-        const newEndTime = minutesTo24Hr(currentEndMin);
+    const handleMouseUp = (e: MouseEvent) => {
+      // Handle drag end
+      const d = dragRef.current;
+      if (d) {
+        dragRef.current = null;
 
-        const updatedSchedules = entry.schedules.map((s) => {
-          if (s.id === schedule.id) {
-            return {
-              ...s,
-              startTime: newStartTime,
-              endTime: newEndTime,
-            };
+        // Clean up ghost elements
+        for (const [, ghost] of ghostElsRef.current) ghost.remove();
+        ghostElsRef.current.clear();
+
+        // Reset block visibility
+        for (let i = 0; i < d.entryIds.length; i++) {
+          const el = document.getElementById(`grid-block-${d.entryIds[i]}-${d.scheduleIds[i]}`);
+          if (el) gsap.set(el, { opacity: 1 });
+        }
+
+        const deltaX = e.pageX - d.startX;
+        const deltaY = e.pageY - d.startY;
+        const dayShift = Math.round(deltaX / COL_WIDTH);
+        const slotShift = Math.round(deltaY / ROW_HEIGHT);
+
+        const updated = new Map<string, SubjectEntry>();
+        const entries = entriesRef.current;
+        const onUpdate = onUpdateEntryRef.current;
+        const vs = viewStartRef.current;
+        const ve = viewEndRef.current;
+
+        for (let i = 0; i < d.entryIds.length; i++) {
+          const eId = d.entryIds[i];
+          const sId = d.scheduleIds[i];
+          const origDay = d.initialDays[i];
+          const origStartMin = d.initialStartMins[i];
+          const duration = d.durations[i];
+
+          const origDayIdx = DAY_ORDER.indexOf(origDay);
+          let newDayIdx = origDayIdx + dayShift;
+          newDayIdx = Math.max(0, Math.min(DAY_ORDER.length - 1, newDayIdx));
+          const newDay = DAY_ORDER[newDayIdx];
+
+          let newStartMin = origStartMin + slotShift * SLOT_INTERVAL;
+          newStartMin = Math.max(vs, Math.min(ve - duration, newStartMin));
+
+          const entry = entries.find(en => en.id === eId);
+          if (!entry) continue;
+
+          const existing = updated.get(eId);
+          const baseEntry = existing || entry;
+
+          const updatedSchedules = baseEntry.schedules.map((s) => {
+            if (s.id === sId) {
+              const daysCopy = s.days.map((day) => (day === origDay ? newDay : day));
+              const uniqueDays = Array.from(new Set(daysCopy));
+              return {
+                ...s,
+                days: uniqueDays,
+                startTime: minutesTo24Hr(newStartMin),
+                endTime: minutesTo24Hr(newStartMin + duration),
+              };
+            }
+            return s;
+          });
+
+          updated.set(eId, {
+            ...baseEntry,
+            schedules: updatedSchedules,
+          });
+
+          const el = document.getElementById(`grid-block-${eId}-${sId}`);
+          if (el) gsap.set(el, { x: 0, y: 0 });
+        }
+
+        for (const [, ue] of updated) {
+          onUpdate?.(ue);
+        }
+      }
+
+      // Handle marquee end
+      const md = marqueeDataRef.current;
+      if (md) {
+        marqueeDataRef.current = null;
+
+        const x1 = Math.min(md.startX, e.clientX);
+        const y1 = Math.min(md.startY, e.clientY);
+        const x2 = Math.max(md.startX, e.clientX);
+        const y2 = Math.max(md.startY, e.clientY);
+
+        if (marqueeElRef.current) {
+          marqueeElRef.current.remove();
+          marqueeElRef.current = null;
+        }
+
+        if (Math.abs(e.clientX - md.startX) < 3 && Math.abs(e.clientY - md.startY) < 3) return;
+
+        const blocks = document.querySelectorAll('.timetable-entry-block');
+        const intersecting: string[] = [];
+
+        blocks.forEach((block) => {
+          const rect = block.getBoundingClientRect();
+          if (rect.left < x2 && rect.right > x1 && rect.top < y2 && rect.bottom > y1) {
+            const id = block.id.replace('grid-block-', '');
+            intersecting.push(id);
           }
-          return s;
         });
 
-        const updatedEntry: SubjectEntry = {
-          ...entry,
-          schedules: updatedSchedules,
-        };
+        if (intersecting.length === 0) return;
 
-        onUpdateEntry?.(updatedEntry);
+        const selectedKeys = selectedBlockKeysRef.current;
+        const toggle = onToggleSelectBlockRef.current;
+        const clear = onClearSelectionRef.current;
+
+        if (md.mode === 'add') {
+          for (const key of intersecting) {
+            if (!selectedKeys.has(key)) toggle(key);
+          }
+        } else if (md.mode === 'subtract') {
+          for (const key of intersecting) {
+            if (selectedKeys.has(key)) toggle(key);
+          }
+        } else {
+          clear();
+          for (const key of intersecting) {
+            toggle(key);
+          }
+        }
       }
-      setResizeState(null);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
+    const ghosts = ghostElsRef.current;
     return () => {
+      for (const [, ghost] of ghosts) ghost.remove();
+      ghosts.clear();
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [resizeState, viewStart, viewEnd, onUpdateEntry]);
+  }, []);
 
+  const startMarquee = (e: React.MouseEvent, container: HTMLDivElement) => {
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const mode: 'add' | 'subtract' | 'replace' = e.ctrlKey || e.metaKey ? 'add' : e.shiftKey ? 'subtract' : 'replace';
 
+    const el = document.createElement('div');
+    el.style.cssText = [
+      'position: absolute',
+      'pointer-events: none',
+      'z-index: 999',
+      'background: rgba(59,130,246,0.12)',
+      'border: 1px solid rgba(59,130,246,0.6)',
+      'border-radius: 3px',
+    ].join(';');
+    container.appendChild(el);
+
+    const rect = container.getBoundingClientRect();
+    gsap.set(el, {
+      x: startX - rect.left + container.scrollLeft,
+      y: startY - rect.top + container.scrollTop,
+      width: 0,
+      height: 0,
+    });
+    marqueeElRef.current = el;
+    marqueeDataRef.current = { startX, startY, mode, container };
+  };
 
   const slotEntries = useMemo(() => {
     const flat: SlotEntry[] = [];
@@ -327,16 +522,13 @@ export const TimetableGrid = memo(function TimetableGrid({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 250px)', border: '1px solid #D0D7E3', borderRadius: 4 }}>
+      <div ref={gridContainerRef} style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 250px)', border: '1px solid #D0D7E3', borderRadius: 4, position: 'relative' }}>
         <div
           onClick={onCancelEdit}
           style={{ display: 'flex', minWidth: TIME_COL_WIDTH + totalDays * COL_WIDTH, position: 'relative' }}
         >
-            {/* Time label column */}
             <div style={{ width: TIME_COL_WIDTH, flexShrink: 0, position: 'sticky', left: 0, zIndex: 3, background: '#F5F7FA' }}>
-              {/* Header cell */}
               <div style={headerCellStyle(TIME_COL_WIDTH, true)}>&nbsp;</div>
-              {/* Time rows */}
               <div style={{ position: 'relative', height: gridHeight + 20 }}>
                 {Array.from({ length: rowCount }, (_, i) => (
                   <div
@@ -360,7 +552,6 @@ export const TimetableGrid = memo(function TimetableGrid({
                     </Text>
                   </div>
                 ))}
-                {/* End of view timespan label */}
                 <div
                   style={{
                     position: 'absolute',
@@ -383,29 +574,15 @@ export const TimetableGrid = memo(function TimetableGrid({
               </div>
             </div>
 
-            {/* Day columns */}
             {DAY_ORDER.map((day) => {
-              // Get entries for the day, and filter by timespan overlap
               const dayEntries = slotEntries.filter((se) => {
-                const isDragged = dragState !== null &&
-                  dragState.entry.id === se.entry.id &&
-                  dragState.originalDay === se.day &&
-                  dragState.schedule.id === se.schedule.id;
-                const isResized = resizeState !== null &&
-                  resizeState.entry.id === se.entry.id &&
-                  resizeState.day === se.day &&
-                  resizeState.schedule.id === se.schedule.id;
-                const activeDay = isDragged ? dragState.currentDay : se.day;
-                const activeStart = isDragged
-                  ? dragState.currentStartMin
-                  : (isResized ? resizeState.currentStartMin : se.startMin);
-                const activeEnd = isDragged
-                  ? (dragState.currentStartMin + dragState.duration)
-                  : (isResized ? resizeState.currentEndMin : se.endMin);
-                return activeDay === day && activeStart < viewEnd && activeEnd > viewStart;
+                const drag = dragRef.current;
+                if (!drag) return se.day === day && se.startMin < viewEnd && se.endMin > viewStart;
+                const idx = drag.blockIds.indexOf(`${se.entry.id}:${se.schedule.id}`);
+                if (idx === -1) return se.day === day && se.startMin < viewEnd && se.endMin > viewStart;
+                return drag.initialDays[idx] === day;
               });
               const isHidden = hiddenDays.includes(day);
-
 
               return (
                 <div
@@ -418,14 +595,12 @@ export const TimetableGrid = memo(function TimetableGrid({
                     transition: 'opacity 0.2s ease',
                   }}
                 >
-                  {/* Day header (white text for the x-axis) */}
                   <div style={headerCellStyle(COL_WIDTH, false)}>
                     <Text strong style={{ fontSize: 12, color: '#ffffff' }}>
                       {day}
                     </Text>
                   </div>
 
-                  {/* Entry cells */}
                   <div
                     className="grid-day-column"
                     data-day-column={day}
@@ -435,9 +610,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                       e.dataTransfer.dropEffect = 'copy';
                       e.currentTarget.style.backgroundColor = 'rgba(59, 130, 246, 0.08)';
                     }}
-                    onDragEnter={(e) => {
-                      e.preventDefault();
-                    }}
+                    onDragEnter={(e) => e.preventDefault()}
                     onDragLeave={(e) => {
                       e.currentTarget.style.backgroundColor = 'transparent';
                     }}
@@ -458,22 +631,35 @@ export const TimetableGrid = memo(function TimetableGrid({
                     }}
                     style={{ position: 'relative', height: gridHeight + 20, transition: 'background-color 0.2s ease' }}
                   >
-                    {/* Background rows */}
-                    {Array.from({ length: rowCount }, (_, i) => (
-                      <div
-                        key={i}
-                        style={{
-                          position: 'absolute',
-                          top: i * ROW_HEIGHT,
-                          left: 0,
-                          right: 0,
-                          height: ROW_HEIGHT,
-                          borderTop: i === 0 ? '1px solid #D0D7E3' : '1px dashed #E4E9F0',
-                          background: (bandedRows && i % 2 !== 0) ? 'rgba(238,241,246,0.5)' : 'transparent',
-                          pointerEvents: 'none',
-                        }}
-                      />
-                    ))}
+                    <div
+                      onMouseDown={(e) => {
+                        if (e.button !== 0) return;
+                        const target = e.target as HTMLElement;
+                        if (target.closest('.timetable-entry-block')) return;
+                        if (target.closest('.ant-dropdown-trigger')) return;
+                        const container = gridContainerRef.current;
+                        if (!container) return;
+                        startMarquee(e, container);
+                      }}
+                      style={{ position: 'absolute', inset: 0, zIndex: 0 }}
+                    >
+                      {/* Background rows */}
+                      {Array.from({ length: rowCount }, (_, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            position: 'absolute',
+                            top: i * ROW_HEIGHT,
+                            left: 0,
+                            right: 0,
+                            height: ROW_HEIGHT,
+                            borderTop: i === 0 ? '1px solid #D0D7E3' : '1px dashed #E4E9F0',
+                            background: (bandedRows && i % 2 !== 0) ? 'rgba(238,241,246,0.5)' : 'transparent',
+                            pointerEvents: 'none',
+                          }}
+                        />
+                      ))}
+                    </div>
                     <div
                       style={{
                         position: 'absolute',
@@ -486,35 +672,15 @@ export const TimetableGrid = memo(function TimetableGrid({
                       }}
                     />
 
-                    {/* Scheduled entry blocks */}
                     {dayEntries.map((se, idx) => {
-                      // Clamp to view bounds
-                      const isDragged = dragState !== null &&
-                        dragState.entry.id === se.entry.id &&
-                        dragState.originalDay === se.day &&
-                        dragState.schedule.id === se.schedule.id;
-
-                      const isResized = resizeState !== null &&
-                        resizeState.entry.id === se.entry.id &&
-                        resizeState.day === se.day &&
-                        resizeState.schedule.id === se.schedule.id;
-
-                      const displayStart = Math.max(
-                        isDragged ? dragState.currentStartMin : (isResized ? resizeState.currentStartMin : se.startMin),
-                        viewStart
-                      );
-                      const displayEnd = Math.min(
-                        isDragged ? (dragState.currentStartMin + dragState.duration) : (isResized ? resizeState.currentEndMin : se.endMin),
-                        viewEnd
-                      );
-
-                      const topPx = ((displayStart - viewStart) / SLOT_INTERVAL) * ROW_HEIGHT;
-                      const heightPx = ((displayEnd - displayStart) / SLOT_INTERVAL) * ROW_HEIGHT;
+                      const topPx = ((se.startMin - viewStart) / SLOT_INTERVAL) * ROW_HEIGHT;
+                      const heightPx = ((se.endMin - se.startMin) / SLOT_INTERVAL) * ROW_HEIGHT;
                       const isEditing = editingEntryId === se.entry.id;
                       const blockKey = `${se.entry.id}:${se.schedule.id}`;
                       const isLinkingFirst = linkingFirstBlockKey === blockKey;
                       const isDimmed = !!linkingHighlightedKeys && !linkingHighlightedKeys.has(blockKey);
                       const color = colorForSubject(se.entry.subjectCode, se.entry.color);
+                      const isSelected = selectedBlockKeys.has(blockKey);
 
                       return (
                         <Tooltip
@@ -538,27 +704,64 @@ export const TimetableGrid = memo(function TimetableGrid({
                           <Dropdown
                             menu={{
                               items: [
+                                ...(selectedBlockKeys.size > 1
+                                  ? [
+                                      { label: `Move ${selectedBlockKeys.size} blocks to room`, key: 'move-multi', icon: <SwapOutlined /> },
+                                      { label: `Delete ${selectedBlockKeys.size} blocks`, key: 'delete-multi', icon: <DeleteOutlined />, danger: true },
+                                      { type: 'divider' as const },
+                                    ]
+                                  : [
+                                      { label: 'Move to room', key: 'move', icon: <SwapOutlined /> },
+                                    ]
+                                ),
+                                { label: 'Copy', key: 'copy', icon: <CopyOutlined /> },
+                                ...(canPaste ? [{ label: 'Paste', key: 'paste' }] : []),
+                                { type: 'divider' as const },
                                 ...(linkingModeActive ? [
                                   { label: 'Unlink Schedule', key: 'unlink', icon: <DisconnectOutlined />, danger: true }
                                 ] : []),
-                                { label: 'Delete Schedule Slot', key: 'delete', icon: <DeleteOutlined />, danger: true },
-                                { label: 'Go to entry', key: 'goto', icon: <AimOutlined /> },
+                                ...(selectedBlockKeys.size <= 1
+                                  ? [
+                                      { label: 'Delete Schedule Slot', key: 'delete', icon: <DeleteOutlined />, danger: true },
+                                      { label: 'Go to Blueprint', key: 'goto', icon: <AimOutlined /> },
+                                    ]
+                                  : []
+                                ),
                               ],
                               onClick: ({ key, domEvent }) => {
                                 domEvent.stopPropagation();
-                                if (key === 'unlink') {
-                                  const blockKey = `${se.entry.id}:${se.schedule.id}`;
+                                if (key === 'move' || key === 'move-multi') {
+                                  const keys = selectedBlockKeys.size > 0 ? Array.from(selectedBlockKeys) : [blockKey];
+                                  keys.forEach(k => onMoveRoom?.(k));
+                                } else if (key === 'unlink') {
                                   onUnlinkBlock?.(blockKey);
                                 } else if (key === 'delete') {
-                                  if (onDeleteSchedule) {
-                                    onDeleteSchedule(se.entry.id, se.schedule.id);
-                                  } else if (onDeleteEntry) {
-                                    onDeleteEntry(se.entry.id);
-                                  }
+                                  if (onDeleteSchedule) onDeleteSchedule(se.entry.id, se.schedule.id);
+                                  else if (onDeleteEntry) onDeleteEntry(se.entry.id);
+                                } else if (key === 'delete-multi') {
+                                  selectedBlockKeys.forEach(k => {
+                                    const [eId, sId] = k.split(':');
+                                    onDeleteSchedule?.(eId, sId);
+                                  });
+                                  onClearSelection();
+                                } else if (key === 'copy') {
+                                  onCopyBlocks(selectedBlockKeys.size > 0 ? Array.from(selectedBlockKeys) : [blockKey]);
+                                } else if (key === 'paste') {
+                                  onPasteBlocks();
                                 } else if (key === 'goto') {
                                   const el = document.getElementById(`subject-card-${se.entry.id}`);
                                   if (el) {
-                                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    const container = el.closest('[class*="blueprint-list"]') || el.parentElement;
+                                    if (container) {
+                                      const containerRect = container.getBoundingClientRect();
+                                      const elRect = el.getBoundingClientRect();
+                                      const offset = elRect.top - containerRect.top - containerRect.height / 2 + elRect.height / 2;
+                                      container.scrollBy({ top: offset, behavior: 'smooth' });
+                                    }
+                                    el.classList.remove('highlight-pulse');
+                                    void el.offsetWidth;
+                                    el.classList.add('highlight-pulse');
+                                    setTimeout(() => el.classList.remove('highlight-pulse'), 1500);
                                     el.focus();
                                   }
                                 }
@@ -572,125 +775,119 @@ export const TimetableGrid = memo(function TimetableGrid({
                               tabIndex={0}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                onSelectScheduleBlock?.(se.entry, se.schedule);
+                                if (e.ctrlKey || e.metaKey) {
+                                  onToggleSelectBlock(blockKey);
+                                } else {
+                                  onSelectScheduleBlock?.(se.entry, se.schedule);
+                                }
                               }}
                               onKeyDown={(e) => {
                               if (e.key === 'Delete' || e.key === 'Backspace') {
                                 e.stopPropagation();
                                 e.preventDefault();
-                                if (onDeleteSchedule) {
-                                  onDeleteSchedule(se.entry.id, se.schedule.id);
-                                }
+                                if (onDeleteSchedule) onDeleteSchedule(se.entry.id, se.schedule.id);
                               }
                             }}
                             onMouseDown={(e) => {
                               if (e.button !== 0) return;
                               e.stopPropagation();
-                              setDragState({
-                                entry: se.entry,
-                                schedule: se.schedule,
-                                originalDay: se.day,
-                                currentDay: se.day,
-                                originalStartMin: se.startMin,
-                                currentStartMin: se.startMin,
-                                duration: se.endMin - se.startMin,
+
+                              const selectedKeys = selectedBlockKeysRef.current;
+                              const isInMultiSelection = selectedKeys.size > 1 && selectedKeys.has(blockKey);
+
+                              let blockIds: string[];
+                              if (isInMultiSelection) {
+                                blockIds = Array.from(selectedKeys);
+                              } else {
+                                blockIds = [blockKey];
+                              }
+
+                              const initialDays: DayOfWeek[] = [];
+                              const initialStartMins: number[] = [];
+                              const durations: number[] = [];
+                              const entryIds: string[] = [];
+                              const scheduleIds: string[] = [];
+                              const colors: string[] = [];
+
+                              for (const bk of blockIds) {
+                                const [eId, sId] = bk.split(':');
+                                const entry = entries.find(en => en.id === eId);
+                                if (!entry) continue;
+                                const sched = entry.schedules.find(s => s.id === sId);
+                                if (!sched) continue;
+                                const blockColor = colorForSubject(entry.subjectCode, entry.color);
+                                for (const d of sched.days) {
+                                  entryIds.push(eId);
+                                  scheduleIds.push(sId);
+                                  initialDays.push(d);
+                                  initialStartMins.push(toMin(sched.startTime));
+                                  durations.push(toMin(sched.endTime) - toMin(sched.startTime));
+                                  colors.push(blockColor);
+                                }
+                              }
+
+                              if (entryIds.length === 0) return;
+
+                              dragRef.current = {
+                                blockIds,
+                                initialDays,
+                                initialStartMins,
+                                durations,
+                                entryIds,
+                                scheduleIds,
+                                colors,
                                 startX: e.pageX,
                                 startY: e.pageY,
-                                offsetX: 0,
-                                offsetY: 0,
-                              });
+                              };
                             }}
-                            style={{
-                              position: 'absolute',
-                              top: topPx + 1,
-                              left: 2,
-                              right: 2,
-                              height: Math.max(heightPx - 2, 20),
-                              backgroundColor: color,
-                              borderRadius: 3,
-                              padding: '2px 5px',
-                              overflow: 'hidden',
-                              zIndex: isDragged || isResized ? 4 : (isEditing ? 3 : 1),
-                              opacity: isDragged || isResized
-                                ? 0.75
-                                : isDimmed
+                              style={{
+                                position: 'absolute',
+                                top: topPx + 1,
+                                left: 2,
+                                right: 2,
+                                height: Math.max(heightPx - 2, 20),
+                                backgroundColor: color,
+                                borderRadius: 3,
+                                padding: '2px 5px',
+                                overflow: 'hidden',
+                                zIndex: isSelected ? 5 : (isEditing ? 3 : 1),
+                                opacity: isDimmed
                                   ? 0.2
                                   : (!(se.schedule.assignedTeacherName || se.entry.assignedTeacherName) ? 0.65 : 1),
-                              border: isDragged || isResized
-                                ? '2px dashed rgba(255,255,255,0.8)'
-                                : isEditing ? '2px solid rgba(255,255,255,0.95)' : 'none',
-                              boxShadow: isEditing
-                                ? '0 0 0 3px rgba(59,130,246,0.7), 0 4px 16px rgba(0,0,0,0.35)'
-                                : '0 1px 3px rgba(0,0,0,0.2)',
-                              display: 'flex',
-                              flexDirection: 'column',
-                              justifyContent: 'flex-start',
-                              cursor: isDragged ? 'move' : 'pointer',
-                            }}
+                                border: isSelected
+                                  ? '2px solid #3B82F6'
+                                  : isEditing ? '2px solid rgba(255,255,255,0.95)' : 'none',
+                                boxShadow: isSelected
+                                  ? '0 0 0 3px rgba(59,130,246,0.7), 0 4px 16px rgba(0,0,0,0.35)'
+                                  : isEditing
+                                    ? '0 0 0 3px rgba(59,130,246,0.7), 0 4px 16px rgba(0,0,0,0.35)'
+                                    : '0 1px 3px rgba(0,0,0,0.2)',
+                                display: 'flex',
+                                flexDirection: 'column',
+                                justifyContent: 'flex-start',
+                                cursor: 'pointer',
+                              }}
                           >
-                            {/* Top resize handle */}
                             <div
                               style={{
                                 position: 'absolute',
-                                top: 0,
-                                left: 0,
-                                right: 0,
-                                height: 6,
-                                cursor: 'ns-resize',
-                                zIndex: 10,
+                                top: 0, left: 0, right: 0, height: 6,
+                                cursor: 'ns-resize', zIndex: 10,
                               }}
-                              onMouseDown={(e) => {
-                                if (e.button !== 0) return;
-                                e.stopPropagation();
-                                setResizeState({
-                                  entry: se.entry,
-                                  schedule: se.schedule,
-                                  day: se.day,
-                                  edge: 'top',
-                                  originalStartMin: se.startMin,
-                                  originalEndMin: se.endMin,
-                                  currentStartMin: se.startMin,
-                                  currentEndMin: se.endMin,
-                                  startY: e.pageY,
-                                });
-                              }}
+                              onMouseDown={(e) => { if (e.button !== 0) return; e.stopPropagation(); }}
                             />
-                            {/* Bottom resize handle */}
                             <div
                               style={{
                                 position: 'absolute',
-                                bottom: 0,
-                                left: 0,
-                                right: 0,
-                                height: 6,
-                                cursor: 'ns-resize',
-                                zIndex: 10,
+                                bottom: 0, left: 0, right: 0, height: 6,
+                                cursor: 'ns-resize', zIndex: 10,
                               }}
-                              onMouseDown={(e) => {
-                                if (e.button !== 0) return;
-                                e.stopPropagation();
-                                setResizeState({
-                                  entry: se.entry,
-                                  schedule: se.schedule,
-                                  day: se.day,
-                                  edge: 'bottom',
-                                  originalStartMin: se.startMin,
-                                  originalEndMin: se.endMin,
-                                  currentStartMin: se.startMin,
-                                  currentEndMin: se.endMin,
-                                  startY: e.pageY,
-                                });
-                              }}
+                              onMouseDown={(e) => { if (e.button !== 0) return; e.stopPropagation(); }}
                             />
                             <Text
                               style={{
-                                fontSize: 10,
-                                fontWeight: 700,
-                                color: '#fff',
-                                lineHeight: 1.3,
-                                display: 'block',
-                                whiteSpace: 'nowrap',
-                                overflow: 'hidden',
+                                fontSize: 10, fontWeight: 700, color: '#fff', lineHeight: 1.3,
+                                display: 'block', whiteSpace: 'nowrap', overflow: 'hidden',
                                 textOverflow: 'ellipsis',
                               }}
                             >
@@ -699,12 +896,8 @@ export const TimetableGrid = memo(function TimetableGrid({
                             {heightPx >= 36 && (
                               <Text
                                 style={{
-                                  fontSize: 9,
-                                  color: 'rgba(255,255,255,0.95)',
-                                  lineHeight: 1.3,
-                                  display: 'block',
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
+                                  fontSize: 9, color: 'rgba(255,255,255,0.95)', lineHeight: 1.3,
+                                  display: 'block', whiteSpace: 'nowrap', overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                 }}
                               >
@@ -714,12 +907,8 @@ export const TimetableGrid = memo(function TimetableGrid({
                             {heightPx >= 48 && (
                               <Text
                                 style={{
-                                  fontSize: 9,
-                                  color: 'rgba(255,255,255,0.85)',
-                                  lineHeight: 1.3,
-                                  display: 'block',
-                                  whiteSpace: 'nowrap',
-                                  overflow: 'hidden',
+                                  fontSize: 9, color: 'rgba(255,255,255,0.85)', lineHeight: 1.3,
+                                  display: 'block', whiteSpace: 'nowrap', overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                 }}
                               >
@@ -737,35 +926,37 @@ export const TimetableGrid = memo(function TimetableGrid({
                       );
                     })}
 
-                    {/* Render overlap overlay elements for conflicts */}
                     {(() => {
+                      interface Event {
+                        time: number;
+                        type: 'start' | 'end';
+                        entry: SubjectEntry;
+                      }
+
+                      const events: Event[] = [];
+                      for (const se of dayEntries) {
+                        events.push({ time: se.startMin, type: 'start', entry: se.entry });
+                        events.push({ time: se.endMin, type: 'end', entry: se.entry });
+                      }
+                      events.sort((a, b) => a.time - b.time || (a.type === 'start' ? -1 : 1));
+
                       const overlapsList: { startMin: number; endMin: number; entries: SubjectEntry[] }[] = [];
-                      for (let i = 0; i < dayEntries.length; i++) {
-                        for (let j = i + 1; j < dayEntries.length; j++) {
-                          const a = dayEntries[i];
-                          const b = dayEntries[j];
-                          const overlapStart = Math.max(a.startMin, b.startMin);
-                          const overlapEnd = Math.min(a.endMin, b.endMin);
-                          if (overlapStart < overlapEnd) {
-                            const existingIdx = overlapsList.findIndex(
-                              (o) => o.startMin === overlapStart && o.endMin === overlapEnd
-                            );
-                            if (existingIdx >= 0) {
-                              const existingList = overlapsList[existingIdx].entries;
-                              if (!existingList.some((e) => e.id === a.entry.id)) {
-                                existingList.push(a.entry);
-                              }
-                              if (!existingList.some((e) => e.id === b.entry.id)) {
-                                existingList.push(b.entry);
-                              }
-                            } else {
-                              overlapsList.push({
-                                startMin: overlapStart,
-                                endMin: overlapEnd,
-                                entries: [a.entry, b.entry]
-                              });
-                            }
+                      const active = new Map<string, SubjectEntry>();
+                      let sweepStart = -1;
+
+                      for (const evt of events) {
+                        if (evt.type === 'start') {
+                          if (active.size >= 2 && sweepStart >= 0 && sweepStart !== evt.time) {
+                            overlapsList.push({ startMin: sweepStart, endMin: evt.time, entries: Array.from(active.values()) });
                           }
+                          active.set(evt.entry.id, evt.entry);
+                          sweepStart = evt.time;
+                        } else {
+                          if (active.size > 1 && sweepStart >= 0 && sweepStart !== evt.time) {
+                            overlapsList.push({ startMin: sweepStart, endMin: evt.time, entries: Array.from(active.values()) });
+                          }
+                          active.delete(evt.entry.id);
+                          sweepStart = evt.time;
                         }
                       }
 
@@ -812,31 +1003,21 @@ export const TimetableGrid = memo(function TimetableGrid({
                                   onMouseEnter={() => {
                                     for (const s of ent.schedules) {
                                       const el = document.getElementById(`grid-block-${ent.id}-${s.id}`);
-                                      if (el) {
-                                        el.classList.add('highlight-pulse');
-                                      }
+                                      if (el) el.classList.add('highlight-pulse');
                                     }
                                   }}
                                   onMouseLeave={() => {
                                     for (const s of ent.schedules) {
                                       const el = document.getElementById(`grid-block-${ent.id}-${s.id}`);
-                                      if (el) {
-                                        el.classList.remove('highlight-pulse');
-                                      }
+                                      if (el) el.classList.remove('highlight-pulse');
                                     }
                                   }}
                                   style={{
                                     padding: '6px 10px',
                                     background: colorForSubject(ent.subjectCode, ent.color),
-                                    color: '#ffffff',
-                                    borderRadius: 4,
-                                    fontSize: 11,
-                                    fontWeight: 600,
-                                    cursor: 'pointer',
-                                    boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
-                                    display: 'flex',
-                                    justifyContent: 'space-between',
-                                    alignItems: 'center',
+                                    color: '#ffffff', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                    cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,0.15)',
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                                   }}
                                   onClick={(e) => {
                                     e.stopPropagation();
@@ -847,9 +1028,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                                         el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
                                         el.classList.add('highlight-pulse');
                                         setTimeout(() => el.classList.remove('highlight-pulse'), 1500);
-                                        if (el instanceof HTMLElement) {
-                                          el.focus();
-                                        }
+                                        if (el instanceof HTMLElement) el.focus();
                                       }
                                     }
                                   }}
@@ -870,9 +1049,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                             title={<span style={{ fontSize: 12, fontWeight: 700, color: '#FF4D4F' }}>Schedule Conflict</span>}
                             content={popoverContent}
                             open={isPopoverOpen}
-                            onOpenChange={(visible) => {
-                              setActivePopoverKey(visible ? popoverKey : null);
-                            }}
+                            onOpenChange={(visible) => setActivePopoverKey(visible ? popoverKey : null)}
                             trigger="hover"
                             placement="right"
                           >
@@ -880,18 +1057,13 @@ export const TimetableGrid = memo(function TimetableGrid({
                               key={`overlap-${oIdx}`}
                               style={{
                                 position: 'absolute',
-                                top: topPx + 1,
-                                left: 2,
-                                right: 2,
+                                top: topPx + 1, left: 2, right: 2,
                                 height: Math.max(heightPx - 2, 20),
                                 backgroundImage: 'linear-gradient(45deg, rgba(255, 77, 79, 0.3) 25%, transparent 25%, transparent 50%, rgba(255, 77, 79, 0.3) 50%, rgba(255, 77, 79, 0.3) 75%, transparent 75%, transparent)',
                                 backgroundSize: '12px 12px',
                                 backgroundColor: 'rgba(255, 77, 79, 0.05)',
                                 border: '1px solid rgba(255, 77, 79, 0.4)',
-                                borderRadius: 3,
-                                zIndex: 2,
-                                pointerEvents: 'auto',
-                                cursor: 'help',
+                                borderRadius: 3, zIndex: 2, pointerEvents: 'auto', cursor: 'help',
                               }}
                             />
                           </Popover>

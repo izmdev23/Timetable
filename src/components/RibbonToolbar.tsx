@@ -1,4 +1,4 @@
-import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, Tabs, Card, Dropdown } from 'antd';
+import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, Tabs, Card, Dropdown, message } from 'antd';
 import {
   SaveOutlined,
   DownloadOutlined,
@@ -11,7 +11,8 @@ import {
 import type { DayOfWeek } from '../types';
 import { DAY_ORDER } from '../types';
 import { useState, useEffect } from 'react';
-import type { DynamicData } from '../hooks/useTimetableStore';
+import type { DynamicData } from '../types';
+import { formatInstructorValue, parseInstructorValue, formatInstructorDisplay } from '../utils/teacherName';
 
 const { Text } = Typography;
 import { Tag } from 'antd';
@@ -38,7 +39,7 @@ interface RibbonToolbarProps {
   teacherOptions: { label: string; value: string }[];
   selectedRooms: string[];
   onSelectedRoomsChange: (val: string[]) => void;
-  roomOptions: string[];
+  roomOptions: Array<{ label: string; value: string }>;
   theme: string;
   onThemeChange: (val: string) => void;
   bandedRows: boolean;
@@ -127,11 +128,11 @@ export function RibbonToolbar({
     let finalDisplay = '';
 
     if (values.dataType === 'instructor') {
-      const lName = values.lastName?.trim() || '';
-      const fName = values.firstName?.trim() || '';
-      const mName = values.middleName?.trim() || '';
-      finalValue = `${lName}, ${fName}, ${mName}`;
-      finalDisplay = `${lName}, ${fName}${mName ? ' ' + mName.charAt(0) + '.' : ''}`;
+      const firstName = values.firstName?.trim() || '';
+      const middleName = values.middleName?.trim() || '';
+      const lastName = values.lastName?.trim() || '';
+      finalValue = formatInstructorValue(firstName, middleName, lastName);
+      finalDisplay = formatInstructorDisplay(firstName, middleName, lastName);
     } else if (values.dataType === 'room') {
       finalValue = values.value?.trim() || '';
       finalDisplay = `${values.displayAs?.trim() || values.value?.trim() || ''}|${values.building || ''}`;
@@ -140,15 +141,26 @@ export function RibbonToolbar({
       finalDisplay = values.displayAs?.trim() || values.value?.trim() || '';
     }
 
-    if (editingDynamicId) {
-      await updateDynamicData(editingDynamicId, values.dataType, finalValue, finalDisplay);
-      setEditingDynamicId(null);
-    } else {
-      await addDynamicData(values.dataType, finalValue, finalDisplay);
+    try {
+      if (editingDynamicId) {
+        await updateDynamicData(editingDynamicId, values.dataType, finalValue, finalDisplay);
+        setEditingDynamicId(null);
+      } else {
+        await addDynamicData(values.dataType, finalValue, finalDisplay);
+      }
+      const savedType = form.getFieldValue('dataType');
+      form.resetFields();
+      form.setFieldsValue({ dataType: savedType });
+      setTimeout(() => {
+        const valueField = form.getFieldInstance('value') || form.getFieldInstance('lastName');
+        if (valueField) {
+          (valueField as HTMLElement)?.focus?.();
+          (valueField as HTMLElement)?.click?.();
+        }
+      }, 50);
+    } catch (e: unknown) {
+      message.error(e instanceof Error ? e.message : 'Failed to save data');
     }
-    const savedType = form.getFieldValue('dataType');
-    form.resetFields();
-    form.setFieldsValue({ dataType: savedType });
   };
   return (
     <div
@@ -160,6 +172,7 @@ export function RibbonToolbar({
         alignItems: 'center',
         gap: 12,
         overflowX: 'auto',
+        overflowY: 'hidden',
         whiteSpace: 'nowrap',
         boxShadow: '0 2px 5px rgba(0,0,0,0.05)',
         zIndex: 10,
@@ -167,66 +180,57 @@ export function RibbonToolbar({
         flexShrink: 0,
       }}
     >
-      {/* File Group */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <Space size={3}>
-          <Tooltip title="Save Timetable (Ctrl+S)">
-            <Button icon={<SaveOutlined />} onClick={onSave} style={{ padding: '8px 10px' }} />
+      {/* File Group — merged with Undo/Redo */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+        <Space size={2}>
+          <Tooltip title="Save Collection (Ctrl+S)">
+            <Button icon={<SaveOutlined />} onClick={onSave} style={{ padding: '6px 8px', fontSize: 12 }} />
           </Tooltip>
-          <Tooltip title="Export Timetable (XLSX / JSON) (Ctrl+Shift+S)">
-            <Button icon={<DownloadOutlined />} onClick={onSaveAs} style={{ padding: '8px 10px' }} />
+          <Tooltip title="Save As / Export (Ctrl+Shift+S)">
+            <Button icon={<DownloadOutlined />} onClick={onSaveAs} style={{ padding: '6px 8px', fontSize: 12 }} />
           </Tooltip>
-          <Tooltip title="Import & Merge Schedules">
-            <Button icon={<UploadOutlined />} onClick={onImportMerge} style={{ padding: '8px 10px' }} />
+          <Tooltip title="Import & Merge JSON Data">
+            <Button icon={<UploadOutlined />} onClick={onImportMerge} style={{ padding: '6px 8px', fontSize: 12 }} />
           </Tooltip>
         </Space>
-        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>FILE</Text>
+        <Space size={2}>
+          <Button icon={<UndoOutlined />} disabled={!canUndo} onClick={onUndo} style={{ padding: '4px 8px', fontSize: 11, height: 24 }} />
+          <Button icon={<RedoOutlined />} disabled={!canRedo} onClick={onRedo} style={{ padding: '4px 8px', fontSize: 11, height: 24 }} />
+        </Space>
+        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>FILE</Text>
       </div>
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
 
-      {/* History Group */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <Space size={3}>
-          <Button icon={<UndoOutlined />} disabled={!canUndo} onClick={onUndo} style={{ padding: '8px 10px' }} />
-          <Button icon={<RedoOutlined />} disabled={!canRedo} onClick={onRedo} style={{ padding: '8px 10px' }} />
-        </Space>
-        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>HISTORY</Text>
-      </div>
-
-
-
-      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
-
-      {/* Add Entry & Dynamic Data Actions */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-        <Space size={3}>
+      {/* Add Entry & Dynamic Data Actions — square buttons with flex column */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+        <Space size={2}>
           <Button
             type="primary"
             icon={<PlusOutlined />}
             onClick={onAddSubjectEntry}
-            style={{ background: '#2B4C7E', borderColor: '#2B4C7E', padding: '8px 12px', fontWeight: 500 }}
+            style={{ background: '#2B4C7E', borderColor: '#2B4C7E', width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
           >
-            Add Subject
+            <span>Subject</span>
           </Button>
           <Button
             icon={<PlusOutlined />}
             onClick={() => setDrawerOpen(true)}
-            style={{ padding: '8px 12px', fontWeight: 500 }}
+            style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
           >
-            Add Data
+            <span>Data</span>
           </Button>
           <Button
             type={linkingModeActive ? 'primary' : 'default'}
             danger={linkingModeActive}
             icon={<LinkOutlined />}
             onClick={onToggleLinkingMode}
-            style={{ padding: '8px 12px', fontWeight: 500 }}
+            style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
           >
-            Link
+            <span>Link</span>
           </Button>
         </Space>
-        <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>INSERT / CONFIG</Text>
+        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>INSERT</Text>
       </div>
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
@@ -274,7 +278,7 @@ export function RibbonToolbar({
                 onChange={onSelectedRoomsChange}
                 style={{ width: 150 }}
                 placeholder="Select Rooms"
-                options={[{ label: 'All', value: 'all' }, ...roomOptions.map((r) => ({ label: r, value: r }))]}
+                options={[{ label: 'All', value: 'all' }, ...roomOptions]}
                 maxTagCount="responsive"
               />
               <Button onClick={() => onSelectedRoomsChange(['all'])}>
@@ -382,6 +386,7 @@ export function RibbonToolbar({
         title="Manage Dynamic Toolbar Data"
         placement="right"
         width={400}
+        styles={{ body: { padding: 0 } }}
         onClose={() => {
           setDrawerOpen(false);
           setEditingDynamicId(null);
@@ -389,6 +394,7 @@ export function RibbonToolbar({
         }}
         open={drawerOpen}
       >
+        <div style={{ padding: 24, paddingBottom: 0 }}>
         <Form
           form={form}
           layout="vertical"
@@ -517,6 +523,7 @@ export function RibbonToolbar({
           <Tabs
             size="small"
             type="card"
+            style={{ margin: 0 }}
             activeKey={activeTab}
             onChange={(key) => {
               setActiveTab(key);
@@ -529,7 +536,7 @@ export function RibbonToolbar({
                 label: type === 'instructor' ? 'Instructors' : (type.charAt(0).toUpperCase() + type.slice(1)),
                 key: type,
                 children: (
-                  <div style={{ maxHeight: 250, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingBlock: 4 }}>
+                  <div style={{ maxHeight: 250, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
                     {list.length === 0 ? (
                       <Text type="secondary" style={{ fontSize: 11, textAlign: 'center', display: 'block', padding: 12 }}>
                         No entries for {type === 'instructor' ? 'instructors' : type}.
@@ -570,12 +577,12 @@ export function RibbonToolbar({
                                       building: parts[1] || '',
                                     });
                                   } else if (item.dataType === 'instructor') {
-                                    const parts = item.value.split(', ');
+                                    const parsed = parseInstructorValue(item.value);
                                     form.setFieldsValue({
                                       dataType: 'instructor',
-                                      lastName: parts[0] || '',
-                                      firstName: parts[1] || '',
-                                      middleName: parts[2] || '',
+                                      lastName: parsed.lastName || '',
+                                      firstName: parsed.firstName || '',
+                                      middleName: parsed.middleName || '',
                                     });
                                   } else {
                                     form.setFieldsValue({
@@ -606,6 +613,7 @@ export function RibbonToolbar({
             })}
           />
         </div>
+      </div>
       </Drawer>
     </div>
   );

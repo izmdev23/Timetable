@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import Database from '@tauri-apps/plugin-sql';
-import type { SubjectEntry, ConflictInfo, DayOfWeek, FormState } from '../types';
+import type { SubjectEntry, ConflictInfo, DayOfWeek, FormState, DynamicData } from '../types';
 import { getConnectedKeys } from '../utils/linkUtils';
 
 let dbPromise: Promise<Database> | null = null;
@@ -34,13 +34,6 @@ function uniqueValues(entries: SubjectEntry[], accessor: (e: SubjectEntry) => st
   return Array.from(seen).sort();
 }
 
-export interface DynamicData {
-  id: string;
-  dataType: string;
-  value: string;
-  displayAs: string;
-}
-
 export const DEFAULT_FORM_STATE: FormState = {
   subjectCode: '',
   offerCode: '',
@@ -64,6 +57,7 @@ export interface TimetableStore {
   updateFilePath: (path: string | null) => Promise<void>;
   addBlueprint: (entry: SubjectEntry) => ConflictInfo[];
   addInstance: (entry: SubjectEntry) => ConflictInfo[];
+  addInstances: (entries: SubjectEntry[]) => ConflictInfo[][];
   updateInstance: (entry: SubjectEntry, editedScheduleId?: string) => ConflictInfo[];
   deleteBlueprint: (id: string) => void;
   deleteInstance: (id: string) => void;
@@ -118,8 +112,15 @@ export interface TimetableStore {
   updateFormState: (state: FormState) => void;
   dynamicData: DynamicData[];
   addDynamicData: (dataType: string, value: string, displayAs: string) => Promise<void>;
+  addLinksBatched: (links: Array<{ childKey: string; parentKey: string }>) => Promise<void>;
   deleteDynamicData: (id: string) => Promise<void>;
   updateDynamicData: (id: string, dataType: string, value: string, displayAs: string) => Promise<void>;
+  isDirty: boolean;
+  markSaved: () => void;
+  addBlueprints: (entries: SubjectEntry[]) => void;
+  addBlueprintsAndInstances: (blueprints: SubjectEntry[], instances: SubjectEntry[]) => void;
+  mergeBlueprints: (entries: SubjectEntry[]) => { addedCount: number; updatedCount: number; skippedCount: number };
+  mergeDynamicData: (entries: DynamicData[]) => { addedCount: number; skippedCount: number };
 }
 
 interface HistorySnapshot {
@@ -188,6 +189,11 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const [formState, setFormStateState] = useState<FormState>(DEFAULT_FORM_STATE);
   const [isLoading, setIsLoading] = useState(true);
   const [dynamicData, setDynamicData] = useState<DynamicData[]>([]);
+  const [isDirty, setIsDirty] = useState(false);
+  const setIsDirtyAndDispatch = useCallback((dirty: boolean) => {
+    setIsDirty(dirty);
+    window.dispatchEvent(new CustomEvent('store:dirty-change', { detail: { isDirty: dirty } }));
+  }, []);
 
   const lastSavedJsonRef = useRef<string>('');
   const lastSavedHiddenDaysRef = useRef<string>('');
@@ -235,7 +241,22 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       .catch((err) => console.error('Failed to load dynamic data:', err));
   }, [timetableId]);
 
+  const isDuplicateRoom = useCallback((value: string, displayAs: string, excludeId: string | null): boolean => {
+    const building = displayAs.split('|')[1] || '';
+    return dynamicData.some(
+      (d) =>
+        d.dataType === 'room' &&
+        d.id !== excludeId &&
+        d.value?.trim().toLowerCase() === value.trim().toLowerCase() &&
+        (d.displayAs.split('|')[1] || '').trim().toLowerCase() === building.trim().toLowerCase()
+    );
+  }, [dynamicData]);
+
   const addDynamicData = useCallback(async (dataType: string, value: string, displayAs: string) => {
+    if (dataType === 'room' && isDuplicateRoom(value, displayAs, null)) {
+      const building = displayAs.split('|')[1] || '';
+      throw new Error(`Room "${value}" already exists in building "${building || '(none)'}".`);
+    }
     const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
     const db = await getDb();
     await db.execute(
@@ -243,15 +264,46 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       [id, dataType, value, displayAs, timetableId]
     );
     setDynamicData((prev) => [...prev, { id, dataType, value, displayAs }]);
-  }, [timetableId]);
+    setIsDirtyAndDispatch(true);
+  }, [timetableId, isDuplicateRoom, setIsDirtyAndDispatch]);
+
+  const addLinksBatched = useCallback(async (links: Array<{ childKey: string; parentKey: string }>) => {
+    if (links.length === 0) return;
+    const db = await getDb();
+    const values: string[] = [];
+    const params: unknown[] = [];
+    links.forEach(({ childKey, parentKey }, i) => {
+      const id = Math.random().toString(36).slice(2) + Date.now().toString(36) + i;
+      const offset = i * 5;
+      values.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5})`);
+      params.push(id, 'link', childKey, parentKey, timetableId);
+    });
+    await db.execute(
+      `INSERT INTO dynamic_data (id, data_type, value, display_as, timetable_id) VALUES ${values.join(', ')}`,
+      params,
+    );
+    const newRows = links.map(({ childKey, parentKey }, i) => ({
+      id: Math.random().toString(36).slice(2) + Date.now().toString(36) + i,
+      dataType: 'link' as const,
+      value: childKey,
+      displayAs: parentKey,
+    }));
+    setDynamicData((prev) => [...prev, ...newRows]);
+    setIsDirtyAndDispatch(true);
+  }, [timetableId, setIsDirtyAndDispatch]);
 
   const deleteDynamicData = useCallback(async (id: string) => {
     const db = await getDb();
     await db.execute('DELETE FROM dynamic_data WHERE id = $1', [id]);
     setDynamicData((prev) => prev.filter((item) => item.id !== id));
-  }, []);
+    setIsDirtyAndDispatch(true);
+  }, [setIsDirtyAndDispatch]);
 
   const updateDynamicData = useCallback(async (id: string, dataType: string, value: string, displayAs: string) => {
+    if (dataType === 'room' && isDuplicateRoom(value, displayAs, id)) {
+      const building = displayAs.split('|')[1] || '';
+      throw new Error(`Room "${value}" already exists in building "${building || '(none)'}".`);
+    }
     const db = await getDb();
     await db.execute(
       'UPDATE dynamic_data SET data_type = $2, value = $3, display_as = $4 WHERE id = $1',
@@ -260,7 +312,12 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     setDynamicData((prev) =>
       prev.map((item) => (item.id === id ? { id, dataType, value, displayAs } : item))
     );
-  }, []);
+    setIsDirtyAndDispatch(true);
+  }, [isDuplicateRoom, setIsDirtyAndDispatch]);
+
+  const markSaved = useCallback(() => {
+    setIsDirtyAndDispatch(false);
+  }, [setIsDirtyAndDispatch]);
 
   // Load from DB on mount
   useEffect(() => {
@@ -354,6 +411,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       setEditingEntryIdState(newEditingEntryId);
       setFormStateState(newFormState);
       setHiddenDaysState(newHiddenDays);
+      setIsDirtyAndDispatch(true);
 
       if (!isUndoRedoOperation) {
         const newHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
@@ -391,8 +449,19 @@ export function useTimetableStore(timetableId: string): TimetableStore {
           .catch((e: unknown) => console.error('Failed to save timetable:', e));
       }
     },
-    [timetableId, hiddenDays, updateHistoryState, dynamicData]
+    [timetableId, hiddenDays, updateHistoryState, dynamicData, setIsDirtyAndDispatch]
   );
+
+  const addBlueprints = useCallback((entries: SubjectEntry[]): void => {
+    const nextBlueprints = [...entries, ...blueprints];
+    commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE);
+  }, [blueprints, instances, commitState]);
+
+  const addBlueprintsAndInstances = useCallback((newBps: SubjectEntry[], newInsts: SubjectEntry[]): void => {
+    const nextBlueprints = [...newBps, ...blueprints];
+    const nextInstances = [...newInsts, ...instances];
+    commitState(nextBlueprints, nextInstances, null, DEFAULT_FORM_STATE);
+  }, [blueprints, instances, commitState]);
 
   const persistState = useCallback(
     (newBlueprints: SubjectEntry[], newInstances: SubjectEntry[], isUndoRedoOperation = false): void => {
@@ -484,6 +553,15 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       const nextInstances = [entry, ...instances];
       commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE);
       return detectConflicts(entry, nextInstances);
+    },
+    [blueprints, instances, commitState, detectConflicts],
+  );
+
+  const addInstances = useCallback(
+    (entries: SubjectEntry[]): ConflictInfo[][] => {
+      const nextInstances = [...entries, ...instances];
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE);
+      return entries.map((entry) => detectConflicts(entry, nextInstances));
     },
     [blueprints, instances, commitState, detectConflicts],
   );
@@ -689,6 +767,97 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       return { successCount, skippedCount, totalImported };
     },
     [blueprints, instances, persistState]
+  );
+
+  const mergeBlueprints = useCallback(
+    (imported: SubjectEntry[]): { addedCount: number; updatedCount: number; skippedCount: number } => {
+      let addedCount = 0;
+      let updatedCount = 0;
+      let skippedCount = 0;
+      const nextBlueprints = [...blueprints];
+
+      for (const entry of imported) {
+        const norm = (s: string) => s.trim().toLowerCase();
+
+        // Check exact match (all properties)
+        const exactMatch = nextBlueprints.find(
+          (e) =>
+            norm(e.subjectCode) === norm(entry.subjectCode) &&
+            norm(e.offerCode) === norm(entry.offerCode) &&
+            norm(e.subjectDescription) === norm(entry.subjectDescription) &&
+            norm(e.program) === norm(entry.program) &&
+            e.year === entry.year &&
+            norm(e.section) === norm(entry.section)
+        );
+        if (exactMatch) {
+          skippedCount++;
+          continue;
+        }
+
+        // Check partial match (same subjectCode + offerCode)
+        const partialIdx = nextBlueprints.findIndex(
+          (e) =>
+            norm(e.subjectCode) === norm(entry.subjectCode) &&
+            norm(e.offerCode) === norm(entry.offerCode)
+        );
+        if (partialIdx !== -1) {
+          nextBlueprints[partialIdx] = {
+            ...entry,
+            id: nextBlueprints[partialIdx].id,
+          };
+          updatedCount++;
+          continue;
+        }
+
+        // No match — add new
+        nextBlueprints.push({
+          ...entry,
+          id: entry.id || Math.random().toString(36).slice(2) + Date.now().toString(36),
+        });
+        addedCount++;
+      }
+
+      commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE);
+      return { addedCount, updatedCount, skippedCount };
+    },
+    [blueprints, instances, commitState]
+  );
+
+  const mergeDynamicData = useCallback(
+    (imported: DynamicData[]): { addedCount: number; skippedCount: number } => {
+      let addedCount = 0;
+      let skippedCount = 0;
+      const newRows: DynamicData[] = [];
+      const nextDynamicData = [...dynamicData];
+
+      for (const entry of imported) {
+        const norm = (s: string) => s.trim().toLowerCase();
+        const exists = nextDynamicData.some(
+          (d) => d.dataType === entry.dataType && norm(d.value) === norm(entry.value)
+        );
+        if (exists) {
+          skippedCount++;
+          continue;
+        }
+        const id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+        const row: DynamicData = {
+          id: entry.id || id,
+          dataType: entry.dataType,
+          value: entry.value,
+          displayAs: entry.displayAs,
+        };
+        newRows.push(row);
+        nextDynamicData.push(row);
+        addedCount++;
+      }
+
+      if (newRows.length > 0) {
+        setDynamicData(nextDynamicData);
+        setIsDirtyAndDispatch(true);
+      }
+      return { addedCount, skippedCount };
+    },
+    [dynamicData, setIsDirtyAndDispatch]
   );
 
   const importSuggestions = useCallback(
@@ -906,6 +1075,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     updateFilePath,
     addBlueprint,
     addInstance,
+    addInstances,
     updateInstance,
     deleteBlueprint,
     deleteInstance,
@@ -934,7 +1104,14 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     updateFormState,
     dynamicData,
     addDynamicData,
+    addLinksBatched,
     deleteDynamicData,
     updateDynamicData,
+    isDirty,
+    markSaved,
+    addBlueprints,
+    addBlueprintsAndInstances,
+    mergeBlueprints,
+    mergeDynamicData,
   };
 }

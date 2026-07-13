@@ -62,6 +62,42 @@ export interface TimetableMeta {
   hiddenDays: DayOfWeek[];
 }
 
+/** A timetable within a .ttcl collection */
+export interface CollectionTimetable {
+  id: string;
+  name: string;
+  blueprints: SubjectEntry[];
+  instances: SubjectEntry[];
+  hiddenDays: DayOfWeek[];
+  theme: string;
+  bandedRows: boolean;
+  createdAt: string;
+  updatedAt: string;
+  dynamicData: DynamicData[];
+}
+
+/** The .ttcl collection file format (Base64 encoded when saved to disk) */
+export interface CollectionFile {
+  version: 1;
+  timetables: CollectionTimetable[];
+}
+
+/** Dynamic data entry (departments, instructors, rooms, etc.) */
+export interface DynamicData {
+  id: string;
+  dataType: string;
+  value: string;
+  displayAs: string;
+}
+
+/** A recent collection entry stored in localStorage */
+export interface CollectionRecord {
+  name: string;
+  path: string;
+  timetableCount: number;
+  lastOpened: string;
+}
+
 /** Form schedules for state history tracking */
 export interface FormSchedule {
   days: DayOfWeek[];

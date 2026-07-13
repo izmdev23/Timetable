@@ -36,6 +36,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "fileAssociations": [
+      {
+        "ext": ["ttcl"],
+        "name": "Timetable Collection",
+        "description": "Timetable Collection File",
+        "role": "Editor"
+      }
+    ],
     "android": {
       "debugApplicationIdSuffix": ".debug"
     }

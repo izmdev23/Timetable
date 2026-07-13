@@ -2,7 +2,7 @@ import { Modal } from 'antd';
 import { useState, useRef, useEffect } from 'react';
 import type { SubjectEntry, FormState, ConflictInfo } from '../types';
 import { BlueprintForm } from './BlueprintForm';
-import type { DynamicData } from '../hooks/useTimetableStore';
+import type { DynamicData } from '../types';
 
 interface EntryFormModalProps {
   open: boolean;

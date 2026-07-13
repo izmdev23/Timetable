@@ -79,7 +79,6 @@ body,
   transform: translateY(-2px) scale(1.02);
   box-shadow: 0 4px 12px rgba(0,0,0,0.3) !important;
   filter: brightness(1.08);
-  z-index: 10 !important;
 }
 .timetable-entry-block:active {
   transform: translateY(0) scale(1.0);

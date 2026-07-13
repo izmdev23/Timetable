@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
-import { Layout, Typography, Spin, message, Button, Modal, List, Select, Checkbox, ConfigProvider, Drawer, Tag } from 'antd';
+import gsap from 'gsap';
+import { Layout, Typography, Spin, message, Button, Modal, List, Select, Checkbox, ConfigProvider, Drawer, Space, notification } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
 import { useTimetableStore } from '../hooks/useTimetableStore';
 import { getLinks, getConnectedKeys } from '../utils/linkUtils';
@@ -7,17 +8,22 @@ import { getThemeConfig } from '../theme';
 import { BlueprintList } from '../components/BlueprintList';
 import { TimetableGrid } from '../components/TimetableGrid';
 import { exportToXlsx } from '../utils/exportXlsx';
+import * as ExcelJS from 'exceljs';
 import { usePreferences } from '../context/PreferencesContext';
-import { save, ask } from '@tauri-apps/plugin-dialog';
+import { save, ask, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import type { SubjectEntry, DayOfWeek, ConflictInfo, Schedule } from '../types';
+import type { SubjectEntry, DayOfWeek, ConflictInfo, Schedule, DynamicData } from '../types';
 
 import { RibbonToolbar } from '../components/RibbonToolbar';
 import { PlacedSchedules } from '../components/PlacedSchedules';
 import { SchedulePropertiesPanel } from '../components/SchedulePropertiesPanel';
 import { BlueprintForm } from '../components/BlueprintForm';
+import { ColumnMappingForm } from '../components/ColumnMappingForm';
+import { detectBlueprintColumns, detectScheduleColumns } from '../utils/autoDetectColumns';
+import { parseInstructorValue, formatInstructorValue, formatInstructorDisplay } from '../utils/teacherName';
 import { StatusBar } from '../components/StatusBar';
 import { useBlueprintSearch } from '../hooks/useBlueprintSearch';
+import { useCollection } from '../hooks/useCollectionContext';
 
 const { Content } = Layout;
 const { Text } = Typography;
@@ -29,12 +35,18 @@ interface TimetablePageProps {
   timetableName: string;
   /** Called when the user navigates back to home */
   onBack: () => void;
-  /** Incremented by TitleBar when File > Save As (XLSX) is triggered */
+  /** Incremented by TitleBar when File > Save As is triggered */
   exportTrigger: number;
-  /** Incremented when Ctrl+S / File > Save (JSON) is triggered */
+  /** Incremented when Ctrl+S / File > Save is triggered */
   saveTrigger: number;
   /** Incremented when File > Import & Merge is triggered */
   importMergeTrigger: number;
+  /** Incremented when File > Export JSON Data is triggered */
+  exportJsonTrigger: number;
+  /** Incremented when File > Export Room Timetable is triggered */
+  exportExcelRoomTrigger: number;
+  /** Incremented when File > Import Blueprints from Excel is triggered */
+  importExcelTrigger: number;
 }
 
 function toMin(time: string): number {
@@ -108,10 +120,13 @@ function filterEntriesForExport(
  * Full timetable editor page.
  * Loads entries and hidden days from SQLite via the store hook and persists on every mutation.
  */
-export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exportTrigger, saveTrigger, importMergeTrigger }: TimetablePageProps) {
+export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exportTrigger, saveTrigger, importMergeTrigger, exportJsonTrigger, exportExcelRoomTrigger, importExcelTrigger }: TimetablePageProps) {
   const store = useTimetableStore(timetableId);
+  const collection = useCollection();
   const prefs = usePreferences();
   const [messageApi, contextHolder] = message.useMessage();
+  const [notificationApi, notificationContextHolder] = notification.useNotification();
+  const [statusMessage, setStatusMessage] = useState('');
 
   useEffect(() => {
     const handleUndo = () => store.undo();
@@ -139,9 +154,17 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('store:history-change', {
-      detail: { canUndo: store.canUndo, canRedo: store.canRedo }
+      detail: { canUndo: store.canUndo, canRedo: store.canRedo, isDirty: store.isDirty }
     }));
-  }, [store.canUndo, store.canRedo]);
+  }, [store.canUndo, store.canRedo, store.isDirty]);
+
+  // Auto-clear status message after 4 seconds
+  useEffect(() => {
+    if (!statusMessage) return;
+    const timer = setTimeout(() => setStatusMessage(''), 4000);
+    return () => clearTimeout(timer);
+  }, [statusMessage]);
+
   const editingEntry = useMemo(
     () => store.blueprints.find((e) => e.id === store.editingEntryId) || null,
     [store.blueprints, store.editingEntryId]
@@ -155,11 +178,15 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const lastSaveTriggerRef = useRef(saveTrigger);
   const lastExportTriggerRef = useRef(exportTrigger);
   const lastImportMergeTriggerRef = useRef(importMergeTrigger);
+  const lastExportJsonTriggerRef = useRef(exportJsonTrigger);
+  const lastExportExcelRoomTriggerRef = useRef(exportExcelRoomTrigger);
+  const lastImportExcelTriggerRef = useRef(importExcelTrigger);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFilterType, setExportFilterType] = useState<'current' | 'all' | 'room'>('current');
   const [exportSelectedRooms, setExportSelectedRooms] = useState<string[]>([]);
   const [exportExactMatch, setExportExactMatch] = useState(false);
+  const [pendingExportPath, setPendingExportPath] = useState<string | null>(null);
 
   const [filterType, setFilterType] = useState<'all' | 'student' | 'teacher' | 'room'>('all');
   const [selectedStudentKey, setSelectedStudentKey] = useState<string | null>(null);
@@ -168,65 +195,150 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [hiddenEntryIds, setHiddenEntryIds] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<string | null>(null);
   const [selectedScheduleBlock, setSelectedScheduleBlock] = useState<{ entry: SubjectEntry; schedule: Schedule } | null>(null);
+  const selectedScheduleBlockRef = useRef(selectedScheduleBlock);
+  selectedScheduleBlockRef.current = selectedScheduleBlock;
+  const [selectedBlockKeys, setSelectedBlockKeys] = useState<Set<string>>(new Set());
+  const [clipboardBlocks, setClipboardBlocks] = useState<Array<{ entryId: string; schedule: Schedule }>>([]);
   const [subjectDrawerOpen, setSubjectDrawerOpen] = useState(false);
 
-  // Custom mouse-drag states
-  const [customDraggingId, setCustomDraggingId] = useState<string | null>(null);
-  const [customDragPos, setCustomDragPos] = useState<{ x: number; y: number } | null>(null);
+  // Custom mouse-drag state (blueprint to timetable) — ghost element managed via raw DOM
+
+  // Move Room Modal
+  const [moveRoomBlockKey, setMoveRoomBlockKey] = useState<string | null>(null);
+  const [moveRoomOpen, setMoveRoomOpen] = useState(false);
+  const [moveTargetBuilding, setMoveTargetBuilding] = useState<string | null>(null);
+  const [moveTargetRoom, setMoveTargetRoom] = useState<string | null>(null);
+
+  // Export Room Modal
+  const [exportRoomModalOpen, setExportRoomModalOpen] = useState(false);
+  const [exportRoomBuilding, setExportRoomBuilding] = useState<string | null>(null);
+  const [exportRoomRoom, setExportRoomRoom] = useState<string | null>(null);
+
+  // Import Excel Modal
+  const [importExcelModalOpen, setImportExcelModalOpen] = useState(false);
+  const [importExcelFileBytes, setImportExcelFileBytes] = useState<Uint8Array | null>(null);
+  const [importExcelFileName, setImportExcelFileName] = useState('');
+  const [importExcelLoading, setImportExcelLoading] = useState(false);
+  const [importExcelMapping, setImportExcelMapping] = useState<Record<string, string>>({});
+  const [importExcelScheduleMapping, setImportExcelScheduleMapping] = useState<Record<string, string>>({});
+  const [importExcelSkipped, setImportExcelSkipped] = useState<string[]>([]);
+  const [importExcelSkippedDrawerOpen, setImportExcelSkippedDrawerOpen] = useState(false);
+  const [importExcelPreviewRows, setImportExcelPreviewRows] = useState<string[][] | undefined>(undefined);
+  const [importNotifications, setImportNotifications] = useState<string[]>([]);
 
   // Link Binding States
   const [linkingModeActive, setLinkingModeActive] = useState(false);
   const [linkingFirstBlockKey, setLinkingFirstBlockKey] = useState<string | null>(null);
   const [linkingHighlightedKeys, setLinkingHighlightedKeys] = useState<Set<string> | null>(null);
-  const [svgLines, setSvgLines] = useState<Array<{ x1: number; y1: number; x2: number; y2: number }>>([]);
 
+  // GSAP-optimized link lines (refs, no React state during scroll)
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const lineElsRef = useRef<Map<string, SVGLineElement>>(new Map());
+  const linkPairsRef = useRef<Array<{ childKey: string; parentKey: string }>>([]);
+
+  // Setup effect: build SVG + line elements when link data changes
   useEffect(() => {
     const showAll = linkingModeActive || !!linkingHighlightedKeys;
+    // Remove existing SVG if nothing to show
     if (!showAll) {
-      setSvgLines([]);
+      if (svgRef.current) {
+        svgRef.current.remove();
+        svgRef.current = null;
+      }
+      lineElsRef.current.clear();
+      linkPairsRef.current = [];
       return;
     }
 
+    const links = getLinks(store.dynamicData);
+    const pairs: Array<{ childKey: string; parentKey: string }> = [];
+    for (const [childKey, parentKey] of links.entries()) {
+      const shouldShow = linkingModeActive || (linkingHighlightedKeys && (linkingHighlightedKeys.has(childKey) || linkingHighlightedKeys.has(parentKey)));
+      if (shouldShow) pairs.push({ childKey, parentKey });
+    }
+    linkPairsRef.current = pairs;
+
+    // Create SVG element if needed
+    let svg = svgRef.current;
+    if (!svg) {
+      svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:999999';
+      document.body.appendChild(svg);
+      svgRef.current = svg;
+    }
+
+    // Build line elements for current pairs
+    const newKeys = new Set(pairs.map(p => p.childKey));
+    // Remove orphaned lines
+    for (const [key, el] of lineElsRef.current) {
+      if (!newKeys.has(key)) {
+        el.remove();
+        lineElsRef.current.delete(key);
+      }
+    }
+    // Create missing lines
+    for (const { childKey } of pairs) {
+      if (!lineElsRef.current.has(childKey)) {
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('stroke', '#ef4444');
+        line.setAttribute('stroke-width', '3');
+        line.setAttribute('stroke-dasharray', '5,5');
+        line.style.filter = 'drop-shadow(0px 2px 4px rgba(0,0,0,0.3))';
+        svg.appendChild(line);
+        lineElsRef.current.set(childKey, line);
+      }
+    }
+
+    const lineEls = lineElsRef.current;
+    const linkPairs = linkPairsRef.current;
+    return () => {
+      if (svgRef.current) {
+        svgRef.current.remove();
+        svgRef.current = null;
+      }
+      lineEls.clear();
+      linkPairs.splice(0, linkPairs.length);
+    };
+  }, [linkingModeActive, linkingHighlightedKeys, store.dynamicData]);
+
+  // Update effect: position lines on scroll/resize via GSAP (no React state)
+  useEffect(() => {
     const updateLines = () => {
-      const newLines: Array<{ x1: number; y1: number; x2: number; y2: number }> = [];
-      const links = getLinks(store.dynamicData);
-
-      for (const [childKey, parentKey] of links.entries()) {
-        const shouldShow = linkingModeActive || (linkingHighlightedKeys && (linkingHighlightedKeys.has(childKey) || linkingHighlightedKeys.has(parentKey)));
-        if (shouldShow) {
-          const [cSubj, cSched] = childKey.split(':');
-          const [pSubj, pSched] = parentKey.split(':');
-
-          const cEl = document.getElementById(`grid-block-${cSubj}-${cSched}`);
-          const pEl = document.getElementById(`grid-block-${pSubj}-${pSched}`);
-
-          if (cEl && pEl) {
-            const cRect = cEl.getBoundingClientRect();
-            const pRect = pEl.getBoundingClientRect();
-
-            newLines.push({
-              x1: cRect.left + cRect.width / 2,
-              y1: cRect.top + cRect.height / 2,
-              x2: pRect.left + pRect.width / 2,
-              y2: pRect.top + pRect.height / 2,
-            });
-          }
+      for (const { childKey, parentKey } of linkPairsRef.current) {
+        const [cs, ci] = childKey.split(':');
+        const [ps, pi] = parentKey.split(':');
+        const cEl = document.getElementById(`grid-block-${cs}-${ci}`);
+        const pEl = document.getElementById(`grid-block-${ps}-${pi}`);
+        if (!cEl || !pEl) continue;
+        const cr = cEl.getBoundingClientRect();
+        const pr = pEl.getBoundingClientRect();
+        const cVisible = cr.bottom > 0 && cr.top < window.innerHeight;
+        const pVisible = pr.bottom > 0 && pr.top < window.innerHeight;
+        const line = lineElsRef.current.get(childKey);
+        if (!line) continue;
+        if (cVisible && pVisible) {
+          gsap.set(line, { attr: { x1: cr.left + cr.width / 2, y1: cr.top + cr.height / 2, x2: pr.left + pr.width / 2, y2: pr.top + pr.height / 2 } });
+          line.style.removeProperty('display');
+        } else {
+          line.style.display = 'none';
         }
       }
-      setSvgLines(newLines);
     };
 
-    updateLines();
-    const t = setTimeout(updateLines, 100);
+    let rafId: number | null = null;
+    const rafUpdate = () => {
+      if (rafId === null) rafId = requestAnimationFrame(() => { updateLines(); rafId = null; });
+    };
 
-    window.addEventListener('resize', updateLines);
-    window.addEventListener('scroll', updateLines, true);
+    rafUpdate();
+    window.addEventListener('resize', rafUpdate);
+    window.addEventListener('scroll', rafUpdate, { passive: true, capture: true });
     return () => {
-      clearTimeout(t);
-      window.removeEventListener('resize', updateLines);
-      window.removeEventListener('scroll', updateLines, true);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', rafUpdate);
+      window.removeEventListener('scroll', rafUpdate, { capture: true } as EventListenerOptions);
     };
-  }, [linkingModeActive, linkingHighlightedKeys, store.dynamicData, store.instances]);
+  }, []);
 
   const roomSuggestionsUnion = useMemo(() => {
     const fromDynamic = store.dynamicData
@@ -235,6 +347,52 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     const union = new Set([...fromDynamic, ...store.suggestions.rooms]);
     return Array.from(union).sort();
   }, [store.dynamicData, store.suggestions.rooms]);
+
+  const roomOptions = useMemo(() => {
+    const roomMap = new Map<string, { label: string; value: string }>();
+    const addedRoomNames = new Set<string>();
+    for (const d of store.dynamicData.filter(d => d.dataType === 'room')) {
+      const parts = d.displayAs.split('|');
+      const roomName = d.value;
+      const building = parts[1] || '';
+      const value = building ? `${roomName}|${building}` : roomName;
+      const label = building ? `${building} - ${roomName}` : roomName;
+      roomMap.set(value, { label, value });
+      addedRoomNames.add(roomName.toLowerCase());
+    }
+    for (const r of store.suggestions.rooms) {
+      if (!addedRoomNames.has(r.toLowerCase())) {
+        roomMap.set(r, { label: r, value: r });
+        addedRoomNames.add(r.toLowerCase());
+      }
+    }
+    return Array.from(roomMap.values()).sort((a, b) => a.label.localeCompare(b.label));
+  }, [store.dynamicData, store.suggestions.rooms]);
+
+  const buildingOptions = useMemo(() => {
+    const buildings = new Set<string>();
+    for (const d of store.dynamicData.filter(d => d.dataType === 'room')) {
+      const parts = d.displayAs.split('|');
+      if (parts[1]) buildings.add(parts[1]);
+    }
+    return Array.from(buildings).sort().map(b => ({ label: b, value: b }));
+  }, [store.dynamicData]);
+
+  const filteredRoomOptions = useMemo(() => {
+    return roomOptions.filter(r => {
+      const parts = r.value.split('|');
+      const building = parts[1] || '';
+      return !moveTargetBuilding || building === moveTargetBuilding;
+    });
+  }, [roomOptions, moveTargetBuilding]);
+
+  const filteredExportRoomOptions = useMemo(() => {
+    return roomOptions.filter(r => {
+      const parts = r.value.split('|');
+      const building = parts[1] || '';
+      return !exportRoomBuilding || building === exportRoomBuilding;
+    });
+  }, [roomOptions, exportRoomBuilding]);
 
   const activeSelectedBlock = useMemo(() => {
     if (!selectedScheduleBlock) return null;
@@ -246,10 +404,14 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [store.instances, selectedScheduleBlock]);
 
   useEffect(() => {
-    if (!activeRoom && roomSuggestionsUnion.length > 0) {
-      setActiveRoom(roomSuggestionsUnion[0]);
+    if (roomOptions.length === 0) {
+      setActiveRoom(null);
+    } else if (!activeRoom) {
+      setActiveRoom(roomOptions[0].value);
+    } else if (!roomOptions.some((o) => o.value === activeRoom)) {
+      setActiveRoom(roomOptions[0].value);
     }
-  }, [roomSuggestionsUnion, activeRoom]);
+  }, [roomOptions, activeRoom]);
 
   const handleSelectedRoomsChange = useCallback((rooms: string[]) => {
     const allAvailableRooms = store.suggestions.rooms;
@@ -345,13 +507,13 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [store.instances]);
   const lastLoadedFilePathRef = useRef<string | null>(null);
 
-  // Load remembered filter settings per JSON file
+  // Load remembered filter settings per timetable
   useEffect(() => {
-    if (!store.filePath || store.isLoading) return;
-    if (lastLoadedFilePathRef.current === store.filePath) return;
+    if (!timetableId || store.isLoading) return;
+    if (lastLoadedFilePathRef.current === timetableId) return;
 
-    lastLoadedFilePathRef.current = store.filePath;
-    const key = `filter_config_${store.filePath}`;
+    lastLoadedFilePathRef.current = timetableId;
+    const key = `filter_config_${timetableId}`;
     const saved = localStorage.getItem(key);
     if (saved) {
       try {
@@ -364,14 +526,14 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         console.error('Failed to parse saved filter config', e);
       }
     }
-  }, [store.filePath, store.isLoading]);
+  }, [timetableId, store.isLoading]);
 
   // Save filter settings to localStorage whenever they change
   useEffect(() => {
-    if (!store.filePath || store.isLoading) return;
-    if (lastLoadedFilePathRef.current !== store.filePath) return;
+    if (!timetableId || store.isLoading) return;
+    if (lastLoadedFilePathRef.current !== timetableId) return;
 
-    const key = `filter_config_${store.filePath}`;
+    const key = `filter_config_${timetableId}`;
     const config = {
       filterType,
       selectedStudentKey,
@@ -379,7 +541,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       selectedRooms,
     };
     localStorage.setItem(key, JSON.stringify(config));
-  }, [store.filePath, store.isLoading, filterType, selectedStudentKey, selectedTeacher, selectedRooms]);
+  }, [timetableId, store.isLoading, filterType, selectedStudentKey, selectedTeacher, selectedRooms]);
 
   // Reset selected keys if they are no longer in the options list
   useEffect(() => {
@@ -428,7 +590,11 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       return store.instances.filter((e) => {
         if (!e.room) return false;
         const entryRooms = e.room.split(',').map((r) => r.trim().toLowerCase());
-        return entryRooms.some((r) => selectedRooms.map((sr) => sr.toLowerCase()).includes(r));
+        return entryRooms.some((r) =>
+          selectedRooms
+            .map((sr) => sr.split('|')[0].trim().toLowerCase())
+            .includes(r)
+        );
       });
     }
     return store.instances;
@@ -436,10 +602,19 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
   const gridEntries = useMemo(() => {
     if (!activeRoom) return [];
+    const activeRoomName = activeRoom.includes('|')
+      ? activeRoom.split('|')[0].trim().toLowerCase()
+      : activeRoom.trim().toLowerCase();
+    const activeRoomFull = activeRoom.trim().toLowerCase();
     return filteredEntries
       .map((e) => {
         const roomSchedules = e.schedules.filter((s) =>
-          s.rooms && s.rooms.some((r) => r.trim().toLowerCase() === activeRoom.trim().toLowerCase())
+          s.rooms && s.rooms.some((r) => {
+            const trimmed = r.trim().toLowerCase();
+            if (trimmed === activeRoomFull) return true;
+            if (!trimmed.includes('|') && trimmed === activeRoomName) return true;
+            return false;
+          })
         );
         return {
           ...e,
@@ -465,7 +640,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     return list;
   }, [gridEntries, store.detectConflicts]);
 
-  // Save (Ctrl+S): save or prompt to save
+  // Save (Ctrl+S): save to .ttcl or prompt for path on first save
   useEffect(() => {
     if (saveTrigger === 0 || saveTrigger <= lastSaveTriggerRef.current) {
       lastSaveTriggerRef.current = saveTrigger;
@@ -474,47 +649,26 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     lastSaveTriggerRef.current = saveTrigger;
 
     async function handleSave() {
-      const entriesToSave = filterEntriesForExport(
-        store.instances,
-        store.hiddenDays,
-        prefs.excludeHiddenDays,
-        viewStart,
-        viewEnd,
-        prefs.excludeTimeWindow,
-      );
-      const json = JSON.stringify(entriesToSave, null, 2);
-      const bytes = Array.from(new TextEncoder().encode(json));
-
-      let path = store.filePath;
-      let shouldPrompt = true;
-
-      if (path) {
+      if (collection.collectionPath) {
         try {
-          const exists = await invoke<boolean>('file_exists', { path });
-          if (exists) {
-            shouldPrompt = false;
-          }
-        } catch {
-          shouldPrompt = true;
+          await collection.saveCollection();
+          store.markSaved();
+          setStatusMessage('Saved');
+        } catch (e: unknown) {
+          messageApi.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
         }
-      }
-      if (shouldPrompt) {
-        const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}.json` });
+      } else {
+        const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}.ttcl` });
         const selectedPath = await save({
-          title: 'Save Timetable',
+          title: 'Save Collection',
           defaultPath: resolvedPath,
-          filters: [{ name: 'JSON File', extensions: ['json'] }]
+          filters: [{ name: 'Timetable Collection', extensions: ['ttcl'] }]
         });
-
-        if (!selectedPath) return; // User cancelled
-        path = selectedPath;
-      }
-
-      if (path) {
+        if (!selectedPath) return;
         try {
-          await invoke('save_file_bytes', { path, bytes });
-          await store.updateFilePath(path);
-          messageApi.success(`Saved to ${path.split(/[\\\/]/).pop()}`);
+          await collection.saveCollectionAs(selectedPath);
+          store.markSaved();
+          setStatusMessage('Saved');
         } catch (e: unknown) {
           messageApi.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -527,37 +681,78 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   async function handleSaveAs() {
     if (allConflictsList.length > 0) {
       const confirmExport = await ask(
-        'This timetable currently contains scheduling conflicts. Are you sure you want to proceed with the export?',
+        'This timetable currently contains scheduling conflicts. Are you sure you want to proceed?',
         {
           title: 'Export Warning',
           kind: 'warning',
-          okLabel: 'Export Anyway',
+          okLabel: 'Proceed Anyway',
           cancelLabel: 'Cancel',
         }
       );
-      if (confirmExport) {
-        proceedWithSaveAs();
-      }
-    } else {
-      proceedWithSaveAs();
+      if (!confirmExport) return;
     }
+
+    const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}` });
+    const selectedPath = await save({
+      title: 'Save As',
+      defaultPath: resolvedPath,
+      filters: [
+        { name: 'Timetable Collection', extensions: ['ttcl'] },
+        { name: 'JSON Data', extensions: ['json'] },
+        { name: 'Excel Workbook', extensions: ['xlsx'] },
+      ]
+    });
+
+    if (!selectedPath) return;
+
+    if (selectedPath.toLowerCase().endsWith('.ttcl')) {
+      try {
+        if (collection.collectionPath === selectedPath) {
+          await collection.saveCollection();
+        } else {
+          await collection.saveCollectionAs(selectedPath);
+        }
+        store.markSaved();
+        setStatusMessage('Saved');
+      } catch (e: unknown) {
+        messageApi.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return;
+    }
+
+    // For .json, export all data directly — no filter modal
+    if (selectedPath.toLowerCase().endsWith('.json')) {
+      const saveObj = {
+        version: 2,
+        blueprints: store.blueprints,
+        instances: store.instances,
+        dynamicData: store.dynamicData,
+      };
+      const json = JSON.stringify(saveObj, null, 2);
+      const bytes = Array.from(new TextEncoder().encode(json));
+      try {
+        await invoke('save_file_bytes', { path: selectedPath, bytes });
+        messageApi.success(`Exported JSON to ${selectedPath.split(/[\\\/]/).pop()}`);
+      } catch (e: unknown) {
+        messageApi.error(`JSON save failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      return;
+    }
+
+    // For XLSX, show filter modal first
+    setExportFilterType('current');
+    setExportSelectedRooms([]);
+    setExportExactMatch(false);
+    setPendingExportPath(selectedPath);
+    setExportModalOpen(true);
   }
 
   async function proceedWithSaveAs() {
     setExportModalOpen(false);
-    const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}` });
-    const selectedPath = await save({
-      title: 'Save Timetable As',
-      defaultPath: resolvedPath,
-      filters: [
-        { name: 'Excel Workbook', extensions: ['xlsx'] },
-        { name: 'JSON File', extensions: ['json'] }
-      ]
-    });
+    const selectedPath = pendingExportPath;
+    setPendingExportPath(null);
+    if (!selectedPath) return;
 
-    if (!selectedPath) return; // User cancelled
-
-    // Apply the room filter if selected
     let entriesToProcess = store.instances;
     if (exportFilterType === 'current') {
       entriesToProcess = filteredEntries;
@@ -578,35 +773,23 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     if (selectedPath.toLowerCase().endsWith('.xlsx')) {
       try {
         await exportToXlsx(
-          entriesToProcess,
-          `${timetableName}.xlsx`,
-          store.hiddenDays,
-          prefs.excludeHiddenDays,
-          viewStart,
-          viewEnd,
-          prefs.excludeTimeWindow,
-          selectedPath
+          entriesToProcess, `${timetableName}.xlsx`,
+          store.hiddenDays, prefs.excludeHiddenDays, viewStart, viewEnd, prefs.excludeTimeWindow,
+          selectedPath,
         );
         messageApi.success(`Exported Excel to ${selectedPath.split(/[\\\/]/).pop()}`);
       } catch (e: unknown) {
         messageApi.error(`Excel export failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     } else if (selectedPath.toLowerCase().endsWith('.json')) {
-      const entriesToSave = filterEntriesForExport(
-        entriesToProcess,
-        store.hiddenDays,
-        prefs.excludeHiddenDays,
-        viewStart,
-        viewEnd,
-        prefs.excludeTimeWindow,
-      );
       const saveObj = {
-        entries: entriesToSave,
+        version: 2,
+        blueprints: store.blueprints,
+        instances: store.instances,
         dynamicData: store.dynamicData,
       };
       const json = JSON.stringify(saveObj, null, 2);
       const bytes = Array.from(new TextEncoder().encode(json));
-
       try {
         await invoke('save_file_bytes', { path: selectedPath, bytes });
         messageApi.success(`Saved JSON to ${selectedPath.split(/[\\\/]/).pop()}`);
@@ -616,19 +799,14 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     }
   }
 
-  // Save As (Ctrl+Shift+S): always prompt and save in selected format (XLSX or JSON)
+  // Save As trigger (Ctrl+Shift+S): call handleSaveAs directly
   useEffect(() => {
     if (exportTrigger === 0 || exportTrigger <= lastExportTriggerRef.current) {
       lastExportTriggerRef.current = exportTrigger;
       return;
     }
     lastExportTriggerRef.current = exportTrigger;
-
-    // Reset settings for a clean export prompt
-    setExportFilterType('current');
-    setExportSelectedRooms([]);
-    setExportExactMatch(false);
-    setExportModalOpen(true);
+    void handleSaveAs();
   }, [exportTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Listen for Import & Merge action from TitleBar
@@ -641,6 +819,65 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     void handleMergeImport();
   }, [importMergeTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Export JSON Data: export collection data as shareable JSON
+  useEffect(() => {
+    if (exportJsonTrigger === 0 || exportJsonTrigger <= lastExportJsonTriggerRef.current) {
+      lastExportJsonTriggerRef.current = exportJsonTrigger;
+      return;
+    }
+    lastExportJsonTriggerRef.current = exportJsonTrigger;
+
+    async function handleExportJson() {
+      const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}.json` });
+      const selectedPath = await save({
+        title: 'Export JSON Data',
+        defaultPath: resolvedPath,
+        filters: [{ name: 'JSON Data', extensions: ['json'] }],
+      });
+      if (!selectedPath) return;
+
+      const saveObj = {
+        version: 2,
+        blueprints: store.blueprints,
+        instances: store.instances,
+        dynamicData: store.dynamicData,
+      };
+      const json = JSON.stringify(saveObj, null, 2);
+      const bytes = Array.from(new TextEncoder().encode(json));
+
+      try {
+        await invoke('save_file_bytes', { path: selectedPath, bytes });
+        messageApi.success(`Exported JSON to ${selectedPath.split(/[\\\/]/).pop()}`);
+      } catch (e: unknown) {
+        messageApi.error(`JSON export failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+
+    void handleExportJson();
+  }, [exportJsonTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Export Room Timetable (Excel)
+  useEffect(() => {
+    if (exportExcelRoomTrigger === 0 || exportExcelRoomTrigger <= lastExportExcelRoomTriggerRef.current) {
+      lastExportExcelRoomTriggerRef.current = exportExcelRoomTrigger;
+      return;
+    }
+    lastExportExcelRoomTriggerRef.current = exportExcelRoomTrigger;
+    setExportRoomBuilding(null);
+    setExportRoomRoom(null);
+    setExportRoomModalOpen(true);
+  }, [exportExcelRoomTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Import Blueprints from Excel
+  useEffect(() => {
+    if (importExcelTrigger === 0 || importExcelTrigger <= lastImportExcelTriggerRef.current) {
+      lastImportExcelTriggerRef.current = importExcelTrigger;
+      return;
+    }
+    lastImportExcelTriggerRef.current = importExcelTrigger;
+    setImportExcelModalOpen(true);
+  }, [importExcelTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleFormSubmit = useCallback((entry: SubjectEntry) => {
     return store.addBlueprint(entry);
   }, [store]);
@@ -652,6 +889,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const handleCancelEdit = useCallback((): void => {
     store.cancelEdit();
     setSelectedScheduleBlock(null);
+    setSelectedBlockKeys(new Set());
     setLinkingFirstBlockKey(null);
     setLinkingHighlightedKeys(null);
   }, [store]);
@@ -731,6 +969,79 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     }
   }, [linkingModeActive, linkingFirstBlockKey, store]);
 
+  const handleToggleSelectBlock = useCallback((blockKey: string) => {
+    setSelectedBlockKeys((prev) => {
+      const next = new Set(prev);
+      const focused = selectedScheduleBlockRef.current;
+      if (focused) {
+        const focusedKey = `${focused.entry.id}:${focused.schedule.id}`;
+        if (!next.has(focusedKey) && focusedKey !== blockKey) {
+          next.add(focusedKey);
+        }
+      }
+      if (next.has(blockKey)) next.delete(blockKey);
+      else next.add(blockKey);
+      return next;
+    });
+    setSelectedScheduleBlock(null);
+  }, []);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedBlockKeys(new Set());
+  }, []);
+
+  const handleCopyBlocks = useCallback((blockKeys: string[]) => {
+    const blocks: Array<{ entryId: string; schedule: Schedule }> = [];
+    const seen = new Set<string>();
+    for (const key of blockKeys) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const [entryId, scheduleId] = key.split(':');
+      const entry = store.instances.find(e => e.id === entryId);
+      if (!entry) continue;
+      const schedule = entry.schedules.find(s => s.id === scheduleId);
+      if (!schedule) continue;
+      blocks.push({ entryId, schedule: { ...schedule } });
+    }
+    setClipboardBlocks(blocks);
+    messageApi.success(`Copied ${blocks.length} block(s)`);
+  }, [store.instances, messageApi]);
+
+  const handlePasteBlocks = useCallback(() => {
+    if (clipboardBlocks.length === 0) return;
+    const newSelectedKeys: string[] = [];
+    const newEntries: SubjectEntry[] = [];
+    for (const { entryId, schedule } of clipboardBlocks) {
+      const originalEntry = store.instances.find(e => e.id === entryId);
+      if (!originalEntry) continue;
+      const newId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const newSchedId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const newSched: Schedule = {
+        ...schedule,
+        id: newSchedId,
+        rooms: schedule.rooms || [],
+      };
+      newEntries.push({
+        id: newId,
+        subjectCode: originalEntry.subjectCode,
+        offerCode: originalEntry.offerCode,
+        subjectDescription: originalEntry.subjectDescription,
+        assignedTeacherName: originalEntry.assignedTeacherName,
+        program: originalEntry.program,
+        year: originalEntry.year,
+        section: originalEntry.section,
+        department: originalEntry.department,
+        color: originalEntry.color,
+        schedules: [newSched],
+      });
+      newSelectedKeys.push(`${newId}:${newSchedId}`);
+    }
+    if (newEntries.length === 0) return;
+    store.addInstances(newEntries);
+    setSelectedBlockKeys(new Set(newSelectedKeys));
+    messageApi.success(`Pasted ${newEntries.length} block(s)`);
+  }, [clipboardBlocks, store, messageApi]);
+
   const handleUnlinkBlock = useCallback(async (blockKey: string) => {
     const linkRow = store.dynamicData.find(
       (d) => d.dataType === 'link' && d.value === blockKey
@@ -753,6 +1064,395 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       return next;
     });
   }, []);
+
+  const handleExcelImport = useCallback(async (payload: { mapping: Record<string, string>; includeSchedule: boolean; timeFormat: 'auto' | '12h' | '24h'; scheduleMapping: Record<string, string>; autoCreateMissing?: boolean }) => {
+    const { mapping, includeSchedule, timeFormat, scheduleMapping, autoCreateMissing = false } = payload;
+    setImportExcelLoading(true);
+
+    const notifications: string[] = [];
+    const skipped: string[] = [];
+    const blueprintMap = new Map<string, SubjectEntry>();
+    const blueprintsToAdd: SubjectEntry[] = [];
+    const instancesToAdd: SubjectEntry[] = [];
+    const linkPairs: Array<{ childKey: string; parentKey: string }> = [];
+    const missingPrograms = new Set<string>();
+    const missingSections = new Set<string>();
+    const missingYears = new Set<string>();
+    const missingDepartments = new Set<string>();
+    const missingBuildings = new Set<string>();
+    const roomToBuildingMap = new Map<string, string>();
+
+    function colLettersToIndex(letters: string): number {
+      let index = 0;
+      for (let i = 0; i < letters.length; i++) {
+        index = index * 26 + (letters.charCodeAt(i) - 64);
+      }
+      return index - 1;
+    }
+
+    function buildColMap(mp: Record<string, string>): Record<string, number> {
+      const result: Record<string, number> = {};
+      for (const [f, letter] of Object.entries(mp)) {
+        if (letter) result[f] = colLettersToIndex(letter.toUpperCase());
+      }
+      return result;
+    }
+
+    function cleanTimeVal(raw: string, fmt: 'auto' | '12h' | '24h'): string | null {
+      const s = raw.trim();
+      if (!s || /^[\s\-—–_]+$/.test(s) || s === '0' || s === '0:00') return null;
+
+      const lower = s.toLowerCase().replace(/\s+/g, '');
+      const match12 = lower.match(/^(\d{1,2}):(\d{2})(a|p|am|pm)$/);
+      if (match12) {
+        let h = parseInt(match12[1], 10);
+        const m = match12[2];
+        const mer = match12[3];
+        if (mer.startsWith('p') && h !== 12) h += 12;
+        if (mer.startsWith('a') && h === 12) h = 0;
+        return `${h.toString().padStart(2, '0')}:${m}`;
+      }
+
+      if (fmt === '12h') return null;
+
+      const cleaned = s.replace(/[^\d:]/g, '');
+      const match24 = cleaned.match(/^(\d{1,2}):(\d{2})$/);
+      if (!match24) return null;
+      let h = parseInt(match24[1], 10);
+      const m = match24[2];
+      if (h > 23) return null;
+      return `${h.toString().padStart(2, '0')}:${m}`;
+    }
+
+    function instructorExists(dd: DynamicData[], firstName: string, middleName: string, lastName: string): boolean {
+      return dd.some((d) => {
+        if (d.dataType !== 'instructor') return false;
+        const p = parseInstructorValue(d.value);
+        return p.firstName.toLowerCase() === firstName.toLowerCase() &&
+          p.middleName.toLowerCase() === middleName.toLowerCase() &&
+          p.lastName.toLowerCase() === lastName.toLowerCase();
+      });
+    }
+
+    function roomExists(dd: DynamicData[], room: string): boolean {
+      return dd.some((d) => d.dataType === 'room' && d.value.toLowerCase() === room.toLowerCase());
+    }
+
+    try {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(importExcelFileBytes as any);
+      const worksheet = workbook.worksheets[0];
+      if (!worksheet) { messageApi.error('No worksheet found'); return; }
+
+      const colMap = buildColMap(mapping);
+      const schedColMap = includeSchedule ? buildColMap(scheduleMapping) : {};
+
+      const unknownRooms = new Map<string, number>();
+      const unknownInstructors = new Map<string, { firstName: string; middleName: string; lastName: string }[]>();
+
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+
+        const getVal = (mp: Record<string, number>, field: string): string => {
+          const idx = mp[field];
+          if (idx === undefined) return '';
+          const cell = row.getCell(idx + 1);
+          return cell.value?.toString()?.trim() || '';
+        };
+
+        const subjectCode = getVal(colMap, 'subjectCode');
+        const offerCode = getVal(colMap, 'offerCode');
+
+        if (!subjectCode && !offerCode) {
+          skipped.push(`Row ${rowNumber}: missing subject code and offer code`);
+          return;
+        }
+
+        const subjectDescription = getVal(colMap, 'subjectDescription');
+        const department = getVal(colMap, 'department');
+        const program = getVal(colMap, 'program');
+        const yearStr = getVal(colMap, 'year');
+        const section = getVal(colMap, 'section');
+        const rawBlueprintRoom = getVal(colMap, 'room');
+        const blueprintRoom = rawBlueprintRoom.includes(',') ? rawBlueprintRoom.split(',')[0].trim() : rawBlueprintRoom;
+        const rawBlueprintBuilding = getVal(colMap, 'building');
+        const blueprintBuilding = rawBlueprintBuilding.trim();
+        const fullBlueprintRoom = blueprintRoom && blueprintBuilding ? `${blueprintRoom}|${blueprintBuilding}` : blueprintRoom;
+
+        const dynamicData = store.dynamicData;
+        const yearNum = parseInt(yearStr, 10);
+
+        if (blueprintBuilding && !dynamicData.some((d: DynamicData) => d.dataType === 'building' && d.value === blueprintBuilding)) {
+          if (autoCreateMissing) {
+            missingBuildings.add(blueprintBuilding);
+          } else {
+            skipped.push(`Row ${rowNumber}: unknown building "${blueprintBuilding}"`);
+            return;
+          }
+        }
+
+        if (blueprintRoom) {
+          if (blueprintBuilding) {
+            roomToBuildingMap.set(blueprintRoom, blueprintBuilding);
+          }
+          if (!roomExists(dynamicData, blueprintRoom)) {
+            unknownRooms.set(blueprintRoom, (unknownRooms.get(blueprintRoom) || 0) + 1);
+          }
+        }
+
+        if (yearStr && isNaN(yearNum)) {
+          skipped.push(`Row ${rowNumber}: invalid year "${yearStr}"`);
+          return;
+        }
+        if (program && !dynamicData.some((d: DynamicData) => d.dataType === 'program' && d.value === program)) {
+          if (autoCreateMissing) {
+            missingPrograms.add(program);
+          } else {
+            skipped.push(`Row ${rowNumber}: unknown program "${program}"`);
+            return;
+          }
+        }
+        if (section && !dynamicData.some((d: DynamicData) => d.dataType === 'section' && d.value === section)) {
+          if (autoCreateMissing) {
+            missingSections.add(section);
+          } else {
+            skipped.push(`Row ${rowNumber}: unknown section "${section}"`);
+            return;
+          }
+        }
+        if (yearStr && !dynamicData.some((d: DynamicData) => d.dataType === 'year' && d.value === yearStr)) {
+          if (autoCreateMissing) {
+            missingYears.add(yearStr);
+          } else {
+            skipped.push(`Row ${rowNumber}: unknown year "${yearStr}"`);
+            return;
+          }
+        }
+        if (department && !dynamicData.some((d: DynamicData) => d.dataType === 'department' && d.value === department)) {
+          if (autoCreateMissing) {
+            missingDepartments.add(department);
+          } else {
+            skipped.push(`Row ${rowNumber}: unknown department "${department}"`);
+            return;
+          }
+        }
+
+        const bpKey = `${subjectCode}|${offerCode}`;
+        if (!blueprintMap.has(bpKey)) {
+          const bp: SubjectEntry = {
+            id: crypto.randomUUID(),
+            subjectCode, offerCode, subjectDescription,
+            assignedTeacherName: '',
+            program, year: yearNum || 0, section,
+            department,
+            room: fullBlueprintRoom || '',
+            schedules: [],
+          };
+          blueprintMap.set(bpKey, bp);
+          blueprintsToAdd.push(bp);
+        }
+
+        if (!includeSchedule) return;
+
+        const DAYS: DayOfWeek[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        const DAY_KEYS = ['monIn', 'monOut', 'tueIn', 'tueOut', 'wedIn', 'wedOut', 'thuIn', 'thuOut', 'friIn', 'friOut', 'satIn', 'satOut', 'sunIn', 'sunOut'];
+
+        for (let d = 0; d < 7; d++) {
+          const startRaw = getVal(schedColMap, DAY_KEYS[d * 2]);
+          const endRaw = getVal(schedColMap, DAY_KEYS[d * 2 + 1]);
+
+          const startTime = cleanTimeVal(startRaw, timeFormat);
+          const endTime = cleanTimeVal(endRaw, timeFormat);
+
+          if (!startTime && !endTime) continue;
+
+          if (startRaw && !startTime) {
+            notifications.push(`Row ${rowNumber}: invalid start time format for ${DAYS[d]}`);
+            continue;
+          }
+          if (endRaw && !endTime) {
+            notifications.push(`Row ${rowNumber}: invalid end time format for ${DAYS[d]}`);
+            continue;
+          }
+          if (!startTime || !endTime) {
+            notifications.push(`Row ${rowNumber}: incomplete time for ${DAYS[d]} (need both start and end)`);
+            continue;
+          }
+
+          const firstName = getVal(schedColMap, 'firstName');
+          const middleName = getVal(schedColMap, 'middleName');
+          const lastName = getVal(schedColMap, 'lastName');
+          const rawRoom = getVal(schedColMap, 'room');
+          // Pick the first room from CSV-formatted values like "RM1,RM2,RM4"
+          const roomVal = rawRoom.includes(',') ? rawRoom.split(',')[0].trim() : rawRoom;
+          const fullRoomVal = roomVal && blueprintBuilding ? `${roomVal}|${blueprintBuilding}` : roomVal;
+
+          if ((firstName || middleName || lastName) && !instructorExists(dynamicData, firstName, middleName, lastName)) {
+            const displayName = `${lastName}, ${firstName} ${middleName}`.trim();
+            if (!unknownInstructors.has(displayName)) {
+              unknownInstructors.set(displayName, []);
+            }
+            unknownInstructors.get(displayName)!.push({ firstName, middleName, lastName });
+          }
+
+          if (roomVal) {
+            if (blueprintBuilding) {
+              roomToBuildingMap.set(roomVal, blueprintBuilding);
+            }
+            if (!roomExists(dynamicData, roomVal)) {
+              unknownRooms.set(roomVal, (unknownRooms.get(roomVal) || 0) + 1);
+            }
+          }
+
+          const instructorDisplayName = formatInstructorDisplay(firstName, middleName, lastName);
+
+          const schedId = crypto.randomUUID();
+          const instanceId = crypto.randomUUID();
+          const schedule: Schedule = {
+            id: schedId,
+            days: [DAYS[d]],
+            startTime,
+            endTime,
+            rooms: fullRoomVal ? [fullRoomVal] : [],
+            assignedTeacherName: instructorDisplayName || undefined,
+          };
+
+          const instance: SubjectEntry = {
+            id: instanceId,
+            subjectCode, offerCode, subjectDescription,
+            assignedTeacherName: instructorDisplayName,
+            room: fullRoomVal || '',
+            program, year: yearNum || 0, section,
+            department,
+            schedules: [schedule],
+            blueprintId: blueprintMap.get(bpKey)!.id,
+          };
+          instancesToAdd.push(instance);
+        }
+      });
+
+      if (autoCreateMissing) {
+        for (const programVal of missingPrograms) {
+          await store.addDynamicData('program', programVal, programVal);
+          notifications.push(`Created program "${programVal}"`);
+        }
+        for (const sectionVal of missingSections) {
+          await store.addDynamicData('section', sectionVal, sectionVal);
+          notifications.push(`Created section "${sectionVal}"`);
+        }
+        for (const yearVal of missingYears) {
+          await store.addDynamicData('year', yearVal, yearVal);
+          notifications.push(`Created year "${yearVal}"`);
+        }
+        for (const deptVal of missingDepartments) {
+          await store.addDynamicData('department', deptVal, deptVal);
+          notifications.push(`Created department "${deptVal}"`);
+        }
+        for (const bldgVal of missingBuildings) {
+          if (!store.dynamicData.some((d: DynamicData) => d.dataType === 'building' && d.value === bldgVal)) {
+            await store.addDynamicData('building', bldgVal, bldgVal);
+            notifications.push(`Created building "${bldgVal}"`);
+          }
+        }
+        for (const [roomName] of unknownRooms) {
+          const bldgVal = roomToBuildingMap.get(roomName) || '';
+          const displayAs = bldgVal ? `${roomName}|${bldgVal}` : roomName;
+          await store.addDynamicData('room', roomName, displayAs);
+          notifications.push(`Created room "${roomName}"${bldgVal ? ` in building "${bldgVal}"` : ''}`);
+        }
+
+        if (includeSchedule) {
+          for (const [, instDetails] of unknownInstructors) {
+            const addedNames = new Set<string>();
+            for (const inst of instDetails) {
+              const key = `${inst.lastName}|${inst.firstName}|${inst.middleName}`.toLowerCase();
+              if (addedNames.has(key)) continue;
+              addedNames.add(key);
+              const value = formatInstructorValue(inst.firstName, inst.middleName, inst.lastName);
+              const displayAs = formatInstructorDisplay(inst.firstName, inst.middleName, inst.lastName);
+              await store.addDynamicData('instructor', value, displayAs);
+            }
+          }
+        }
+      }
+
+      if (blueprintsToAdd.length > 0 || instancesToAdd.length > 0) {
+        store.addBlueprintsAndInstances(blueprintsToAdd, instancesToAdd);
+      }
+
+      if (instancesToAdd.length > 0) {
+
+        const groups = new Map<string, SubjectEntry[]>();
+        for (const inst of instancesToAdd) {
+          const key = `${inst.subjectCode}|${inst.offerCode}`;
+          if (!groups.has(key)) groups.set(key, []);
+          groups.get(key)!.push(inst);
+        }
+        for (const [, group] of groups) {
+          if (group.length < 2) continue;
+          const parent = group[0];
+          for (let i = 1; i < group.length; i++) {
+            const child = group[i];
+            const parentKey = `${parent.id}:${parent.schedules[0]?.id}`;
+            const childKey = `${child.id}:${child.schedules[0]?.id}`;
+            if (parentKey && childKey) {
+              linkPairs.push({ childKey, parentKey });
+            }
+          }
+        }
+
+        if (linkPairs.length > 0 && store.addLinksBatched) {
+          await store.addLinksBatched(linkPairs);
+        } else if (linkPairs.length > 0) {
+          for (const { childKey, parentKey } of linkPairs) {
+            await store.addDynamicData('link', childKey, parentKey);
+          }
+        }
+      }
+
+      if (!autoCreateMissing) {
+        for (const [room, count] of unknownRooms) {
+          notifications.push(`${count} row(s) reference unknown room "${room}"`);
+        }
+        for (const [displayName] of unknownInstructors) {
+          notifications.push(`1 row(s) reference unknown instructor "${displayName}"`);
+        }
+      }
+
+      const msg = `Imported ${blueprintsToAdd.length} blueprint(s)`;
+      const schedMsg = includeSchedule ? `, ${instancesToAdd.length} schedule(s) placed, ${linkPairs.length} link(s) created` : '';
+      messageApi.success(msg + schedMsg);
+
+      setImportExcelSkipped(skipped);
+      if (skipped.length > 0) setImportExcelSkippedDrawerOpen(true);
+
+      setImportNotifications(notifications);
+
+      if (notifications.length > 0) {
+        notificationApi.warning({
+          message: 'Import Notifications',
+          description: (
+            <div style={{ whiteSpace: 'pre-wrap', maxHeight: 300, overflowY: 'auto' }}>
+              {notifications.map((n, i) => (
+                <div key={i} style={{ marginBottom: 4 }}>• {n}</div>
+              ))}
+            </div>
+          ),
+          duration: 10,
+        });
+      }
+
+      setImportExcelModalOpen(false);
+      setImportExcelFileBytes(null);
+      setImportExcelFileName('');
+      setImportExcelMapping({});
+      setImportExcelScheduleMapping({});
+    } catch (e: unknown) {
+      messageApi.error(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setImportExcelLoading(false);
+    }
+  }, [importExcelFileBytes, store, messageApi, notificationApi]);
 
   const handleDropEntry = useCallback((entryId: string, day: DayOfWeek, startMin: number, room: string) => {
     const entry = store.blueprints.find((e) => e.id === entryId);
@@ -778,44 +1478,143 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [store]);
 
   const handleDragStartCustom = useCallback((entryId: string, clientX: number, clientY: number) => {
-    setCustomDraggingId(entryId);
-    setCustomDragPos({ x: clientX, y: clientY });
-  }, []);
+    const entry = store.blueprints.find((e) => e.id === entryId);
+    if (!entry) return;
 
-  useEffect(() => {
-    if (!customDraggingId) return;
+    // Floating ghost that follows cursor
+    const ghost = document.createElement('div');
+    ghost.id = 'custom-drag-ghost';
+    ghost.style.cssText = [
+      'position: fixed',
+      'pointer-events: none',
+      'z-index: 9999999',
+      'opacity: 0.9',
+      'box-shadow: 0 4px 16px rgba(0,0,0,0.18)',
+      'background: #FFFFFF',
+      'border: 2px solid #2B4C7E',
+      'border-radius: 6px',
+      'padding: 6px 10px',
+      'font-size: 11px',
+      'font-weight: 700',
+      'color: #1E3560',
+      'display: flex',
+      'align-items: center',
+      'gap: 6px',
+      'left: 0',
+      'top: 0',
+      'will-change: transform',
+    ].join(';');
+    ghost.innerHTML = `<span style="background:#2B4C7E;color:#fff;padding:0 6px;border-radius:4px;font-size:10px;font-weight:700">${entry.subjectCode}</span><span>${entry.offerCode}</span>`;
+    document.body.appendChild(ghost);
+    gsap.set(ghost, { x: clientX + 12, y: clientY + 12 });
+
+    // Drop-preview ghost in grid (created lazily on first grid hover)
+    let previewGhost: HTMLDivElement | null = null;
 
     const handleMouseMove = (e: MouseEvent) => {
-      setCustomDragPos({ x: e.clientX, y: e.clientY });
+      gsap.set(ghost, { x: e.clientX + 12, y: e.clientY + 12 });
+
+      // Check if cursor is over a grid day column
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const columnEl = el ? el.closest<HTMLElement>('.grid-day-column') : null;
+      if (columnEl) {
+        const room = columnEl.getAttribute('data-room') || '';
+        if (!room) {
+          if (previewGhost) { previewGhost.remove(); previewGhost = null; }
+          return;
+        }
+        const rect = columnEl.getBoundingClientRect();
+        const relativeY = e.clientY - rect.top;
+        const slotIndex = Math.max(0, Math.floor((relativeY - 32) / 36));
+        const topPx = slotIndex * 36;
+
+        if (!previewGhost) {
+          previewGhost = document.createElement('div');
+          previewGhost.className = 'ghost-pulse';
+          previewGhost.style.cssText = [
+            'position: absolute',
+            'pointer-events: none',
+            'z-index: 99998',
+            'border: 2px dashed #2B4C7E',
+            'border-radius: 3px',
+            'background: rgba(59,130,246,0.08)',
+            'opacity: 0.85',
+            'box-sizing: border-box',
+          ].join(';');
+          columnEl.appendChild(previewGhost);
+        } else if (previewGhost.parentElement !== columnEl) {
+          previewGhost.remove();
+          columnEl.appendChild(previewGhost);
+        }
+
+        gsap.set(previewGhost, { top: topPx + 1, left: 2, right: 2, height: 34 });
+      } else {
+        if (previewGhost) { previewGhost.remove(); previewGhost = null; }
+      }
     };
 
     const handleMouseUp = (e: MouseEvent) => {
+      ghost.remove();
+      if (previewGhost) previewGhost.remove();
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+
       const el = document.elementFromPoint(e.clientX, e.clientY);
       const columnEl = el ? el.closest('.grid-day-column') : null;
       if (columnEl) {
         const day = columnEl.getAttribute('data-day-column') as DayOfWeek;
         const room = columnEl.getAttribute('data-room') || '';
+        if (!room) {
+          messageApi.warning('Please select a Room Timetable first.');
+          return;
+        }
         const rect = columnEl.getBoundingClientRect();
         const relativeY = e.clientY - rect.top;
-        const slotIndex = Math.max(0, Math.floor((relativeY - 32) / 36)); // 32px is header cell height, 36px is ROW_HEIGHT
-        const startMin = viewStart + slotIndex * 30; // 30 is SLOT_INTERVAL
-        handleDropEntry(customDraggingId, day, startMin, room);
+        const slotIndex = Math.max(0, Math.floor((relativeY - 32) / 36));
+        const startMin = viewStart + slotIndex * 30;
+        handleDropEntry(entryId, day, startMin, room);
       }
-      setCustomDraggingId(null);
-      setCustomDragPos(null);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [customDraggingId, viewStart, handleDropEntry]);
+  }, [store.blueprints, viewStart, handleDropEntry, messageApi]);
 
   const handleDeleteSchedule = useCallback((entryId: string, _scheduleId: string) => {
     store.deleteInstance(entryId);
   }, [store]);
+
+  const handleMoveRoom = useCallback((blockKey: string) => {
+    setMoveRoomBlockKey(blockKey);
+    setMoveTargetBuilding(null);
+    setMoveTargetRoom(null);
+    setMoveRoomOpen(true);
+  }, []);
+
+  const handleConfirmMoveRoom = useCallback(async () => {
+    if (!moveRoomBlockKey || !moveTargetRoom || !moveTargetBuilding) return;
+    const [entryId, scheduleId] = moveRoomBlockKey.split(':');
+    const entry = store.instances.find(e => e.id === entryId);
+    if (!entry) return;
+    const schedule = entry.schedules.find(s => s.id === scheduleId);
+    if (!schedule) return;
+
+    // Unlink all links involving this block
+    for (const d of store.dynamicData) {
+      if (d.dataType === 'link' && (d.value === moveRoomBlockKey || d.displayAs === moveRoomBlockKey)) {
+        await store.deleteDynamicData(d.id);
+      }
+    }
+
+    const newRoomValue = `${moveTargetRoom}|${moveTargetBuilding}`;
+    const updatedSchedule = { ...schedule, rooms: [newRoomValue] };
+    const updatedSchedules = entry.schedules.map(s => s.id === scheduleId ? updatedSchedule : s);
+    const updatedEntry = { ...entry, schedules: updatedSchedules, room: newRoomValue };
+    store.updateInstance(updatedEntry, scheduleId);
+    setMoveRoomOpen(false);
+    setMoveRoomBlockKey(null);
+    messageApi.success('Schedule moved to new room');
+  }, [moveRoomBlockKey, moveTargetRoom, moveTargetBuilding, store, messageApi]);
 
   const handleHighlightSchedule = useCallback((entryId: string, scheduleId: string) => {
     const blockId = `grid-block-${entryId}-${scheduleId}`;
@@ -872,6 +1671,42 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
 
   // Import and Merge schedules from JSON file
+  function validateSubjectEntry(item: Record<string, unknown>): SubjectEntry | null {
+    if (!item || typeof item.subjectCode !== 'string' || typeof item.offerCode !== 'string') return null;
+    const rawSchedules = item.schedules;
+    const schedules: Schedule[] = Array.isArray(rawSchedules)
+      ? (rawSchedules as Record<string, unknown>[]).map((s) => ({
+          id: typeof s.id === 'string' ? s.id : Math.random().toString(36).slice(2) + Date.now().toString(36),
+          days: Array.isArray(s.days) ? (s.days as DayOfWeek[]) : [],
+          startTime: typeof s.startTime === 'string' ? s.startTime : '',
+          endTime: typeof s.endTime === 'string' ? s.endTime : '',
+          rooms: Array.isArray(s.rooms) ? (s.rooms as string[]) : [],
+        }))
+      : [];
+    return {
+      id: typeof item.id === 'string' ? item.id : Math.random().toString(36).slice(2) + Date.now().toString(36),
+      subjectCode: item.subjectCode as string,
+      offerCode: item.offerCode as string,
+      subjectDescription: typeof item.subjectDescription === 'string' ? item.subjectDescription : '',
+      assignedTeacherName: typeof item.assignedTeacherName === 'string' ? item.assignedTeacherName : '',
+      room: typeof item.room === 'string' ? item.room : '',
+      schedules,
+      program: typeof item.program === 'string' ? item.program : '',
+      year: typeof item.year === 'number' ? item.year : 1,
+      section: typeof item.section === 'string' ? item.section : '',
+    };
+  }
+
+  function validateDynamicDataItem(item: Record<string, unknown>): DynamicData | null {
+    if (!item || typeof item.dataType !== 'string') return null;
+    return {
+      id: typeof item.id === 'string' ? item.id : Math.random().toString(36).slice(2) + Date.now().toString(36),
+      dataType: item.dataType as string,
+      value: typeof item.value === 'string' ? item.value : '',
+      displayAs: typeof item.displayAs === 'string' ? item.displayAs : '',
+    };
+  }
+
   async function handleMergeImport() {
     try {
       const { open: openDialog } = await import('@tauri-apps/plugin-dialog');
@@ -887,61 +1722,86 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       const content = await invoke<string>('read_text_file', { path: filePath });
       const parsed = JSON.parse(content);
 
-      if (!Array.isArray(parsed)) {
-        throw new Error('Schedules file must be a JSON array of timetable entries.');
+      let blueprintsToImport: SubjectEntry[] = [];
+      let instancesToImport: SubjectEntry[] = [];
+      let dynamicDataToImport: DynamicData[] | null = null;
+
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const obj = parsed as Record<string, unknown>;
+
+        if (obj.version === 2) {
+          // New format: { version: 2, blueprints, instances, dynamicData }
+          if (Array.isArray(obj.blueprints)) {
+            blueprintsToImport = (obj.blueprints as Record<string, unknown>[])
+              .map((item) => validateSubjectEntry(item))
+              .filter((e): e is SubjectEntry => e !== null);
+          }
+          if (Array.isArray(obj.instances)) {
+            instancesToImport = (obj.instances as Record<string, unknown>[])
+              .map((item) => validateSubjectEntry(item))
+              .filter((e): e is SubjectEntry => e !== null);
+          }
+          if (Array.isArray(obj.dynamicData)) {
+            dynamicDataToImport = (obj.dynamicData as Record<string, unknown>[])
+              .map((item) => validateDynamicDataItem(item))
+              .filter((e): e is DynamicData => e !== null);
+          }
+        } else if (Array.isArray(obj.entries)) {
+          // Legacy v1: { entries, dynamicData }
+          instancesToImport = (obj.entries as Record<string, unknown>[])
+            .map((item) => validateSubjectEntry(item))
+            .filter((e): e is SubjectEntry => e !== null);
+          if (Array.isArray(obj.dynamicData)) {
+            dynamicDataToImport = (obj.dynamicData as Record<string, unknown>[])
+              .map((item) => validateDynamicDataItem(item))
+              .filter((e): e is DynamicData => e !== null);
+          }
+        } else {
+          throw new Error('Unrecognized JSON format. Expected version 2, or legacy { entries, dynamicData } format.');
+        }
+      } else if (Array.isArray(parsed)) {
+        // Legacy bare array
+        instancesToImport = (parsed as Record<string, unknown>[])
+          .map((item) => validateSubjectEntry(item))
+          .filter((e): e is SubjectEntry => e !== null);
+      } else {
+        throw new Error('Invalid JSON format. Expected an object or array.');
       }
 
-      // Validate structure without using the forbidden `any` type
-      const validEntries: SubjectEntry[] = (parsed as Record<string, unknown>[]).filter(
-        (item) =>
-          item &&
-          typeof item === 'object' &&
-          typeof item.subjectCode === 'string' &&
-          typeof item.offerCode === 'string' &&
-          typeof item.subjectDescription === 'string' &&
-          Array.isArray(item.schedules)
-      ).map((item) => {
-        const rawSchedules = item.schedules as Record<string, unknown>[];
-        return {
-          id: typeof item.id === 'string' ? item.id : '',
-          subjectCode: item.subjectCode as string,
-          offerCode: item.offerCode as string,
-          subjectDescription: item.subjectDescription as string,
-          assignedTeacherName: typeof item.assignedTeacherName === 'string' ? item.assignedTeacherName : '',
-          room: typeof item.room === 'string' ? item.room : '',
-          schedules: rawSchedules.map((s) => ({
-            id: typeof s.id === 'string' ? s.id : '',
-            days: Array.isArray(s.days) ? (s.days as DayOfWeek[]) : [],
-            startTime: typeof s.startTime === 'string' ? s.startTime : '',
-            endTime: typeof s.endTime === 'string' ? s.endTime : '',
-            rooms: Array.isArray(s.rooms)
-              ? (s.rooms as string[])
-              : (typeof item.room === 'string' && item.room ? [item.room] : []),
-          })),
-          program: typeof item.program === 'string' ? item.program : '',
-          programShorthand: typeof item.programShorthand === 'string' ? item.programShorthand : '',
-          year: typeof item.year === 'number' ? item.year : 1,
-          section: typeof item.section === 'string' ? item.section : '',
-        };
-      });
+      const summaryLines: string[] = ['Import complete.', ''];
 
-      if (validEntries.length === 0) {
-        throw new Error('No valid schedules found in the file.');
+      // Import blueprints
+      if (blueprintsToImport.length > 0) {
+        const bpResult = store.mergeBlueprints(blueprintsToImport);
+        summaryLines.push(
+          `Blueprints: ${bpResult.addedCount} added, ${bpResult.updatedCount} updated, ${bpResult.skippedCount} skipped`
+        );
       }
 
-      const result = store.mergeEntries(validEntries);
+      // Import instances
+      if (instancesToImport.length > 0) {
+        const instResult = store.mergeEntries(instancesToImport);
+        summaryLines.push(
+          `Instances: ${instResult.successCount} merged, ${instResult.skippedCount} skipped`
+        );
+      }
+
+      // Import dynamic data
+      if (dynamicDataToImport && dynamicDataToImport.length > 0) {
+        const ddResult = store.mergeDynamicData(dynamicDataToImport);
+        summaryLines.push(
+          `Toolbar data: ${ddResult.addedCount} added, ${ddResult.skippedCount} skipped`
+        );
+      }
+
+      if (summaryLines.length <= 2) {
+        throw new Error('No valid data found in the file.');
+      }
 
       const { message: nativeMessage } = await import('@tauri-apps/plugin-dialog');
-      const lines = [
-        `Import complete.`,
-        ``,
-        `Total entries in file:   ${result.totalImported}`,
-        `Merged (new/updated):    ${result.successCount}`,
-        `Skipped (duplicates):    ${result.skippedCount}`,
-      ];
-      await nativeMessage(lines.join('\n'), { title: 'Import & Merge Summary', kind: 'info' });
+      await nativeMessage(summaryLines.join('\n'), { title: 'Import Summary', kind: 'info' });
     } catch (e: unknown) {
-      messageApi.error(`Merge failed: ${e instanceof Error ? e.message : String(e)}`);
+      messageApi.error(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
@@ -957,6 +1817,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     <ConfigProvider theme={getThemeConfig(store.theme)}>
       <Layout style={{ height: '100%', background: '#F5F7FA', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {contextHolder}
+        {notificationContextHolder}
 
         {/* ── Ribbon Toolbar ────────────────────────────────────────── */}
         <RibbonToolbar
@@ -977,7 +1838,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           teacherOptions={teacherOptions}
           selectedRooms={selectedRooms}
           onSelectedRoomsChange={handleSelectedRoomsChange}
-          roomOptions={roomSuggestionsUnion}
+          roomOptions={roomOptions}
           theme={store.theme}
           onThemeChange={store.updateTheme}
           bandedRows={store.bandedRows}
@@ -1039,7 +1900,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
               display: 'flex',
               flexDirection: 'column',
               height: '100%',
-              padding: 12,
+              padding: '12px 12px 0',
             }}
           >
             <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
@@ -1061,6 +1922,13 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                 linkingHighlightedKeys={linkingHighlightedKeys}
                 linkingModeActive={linkingModeActive}
                 onUnlinkBlock={handleUnlinkBlock}
+                onMoveRoom={handleMoveRoom}
+                selectedBlockKeys={selectedBlockKeys}
+                onToggleSelectBlock={handleToggleSelectBlock}
+                onClearSelection={handleClearSelection}
+                onCopyBlocks={handleCopyBlocks}
+                onPasteBlocks={handlePasteBlocks}
+                canPaste={clipboardBlocks.length > 0}
               />
             </div>
           </div>
@@ -1068,6 +1936,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           {/* Right Slide-in Schedules Panel / Schedule Properties */}
           {activeSelectedBlock ? (
             <SchedulePropertiesPanel
+              disabled={selectedBlockKeys.size > 1}
               entry={activeSelectedBlock.entry}
               schedule={activeSelectedBlock.schedule}
               dynamicData={store.dynamicData}
@@ -1097,15 +1966,19 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
         {/* ── Status Bar ────────────────────────────────────────────── */}
         <StatusBar
-          fileName={store.filePath ? store.filePath.split(/[/\\]/).pop() ?? null : null}
+          fileName={collection.collectionPath ? collection.collectionPath.split(/[/\\]/).pop() ?? null : null}
           linkingModeActive={linkingModeActive}
           onToggleLinkingMode={handleToggleLinkingMode}
-          roomOptions={roomSuggestionsUnion}
+          roomOptions={roomOptions}
           activeRoom={activeRoom}
           onActiveRoomChange={setActiveRoom}
           linkingFirstBlockKey={linkingFirstBlockKey}
           allConflictsList={allConflictsList}
           onHighlightSchedule={handleHighlightSchedule}
+          isDirty={store.isDirty}
+          statusMessage={statusMessage}
+          theme={store.theme}
+          importNotifications={importNotifications}
         />
 
         {/* ── Suggestions Modal ────────────────────────────────────── */}
@@ -1191,7 +2064,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         <Modal
           title="Export Timetable Options"
           open={exportModalOpen}
-          onOk={handleSaveAs}
+          onOk={proceedWithSaveAs}
           onCancel={() => setExportModalOpen(false)}
           okText="Export"
           destroyOnClose
@@ -1229,7 +2102,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                       onChange={(val) => setExportSelectedRooms(val)}
                       style={{ width: 180 }}
                       placeholder="Select or type rooms"
-                      options={roomSuggestionsUnion.map((r) => ({ label: r, value: r }))}
+                      options={roomOptions}
                       maxTagCount="responsive"
                     />
                   </div>
@@ -1284,64 +2157,222 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         </Drawer>
       </Layout>
 
-      {svgLines.length > 0 && (
-        <svg
-          style={{
-            position: 'fixed',
-            top: 0,
-            left: 0,
-            width: '100vw',
-            height: '100vh',
-            pointerEvents: 'none',
-            zIndex: 999999,
-          }}
-        >
-          {svgLines.map((line, idx) => (
-            <line
-              key={idx}
-              x1={line.x1}
-              y1={line.y1}
-              x2={line.x2}
-              y2={line.y2}
-              stroke="#ef4444"
-              strokeWidth={3}
-              strokeDasharray="5,5"
-              style={{ filter: 'drop-shadow(0px 2px 4px rgba(0,0,0,0.3))' }}
-            />
-          ))}
-        </svg>
-      )}
+      {/* Ghost element is now created as a raw DOM node for performance */}
 
-      {customDraggingId && customDragPos && (
-        <div
-          style={{
-            position: 'fixed',
-            left: customDragPos.x + 12,
-            top: customDragPos.y + 12,
-            pointerEvents: 'none',
-            zIndex: 9999999,
-            opacity: 0.9,
-            boxShadow: '0 4px 16px rgba(0,0,0,0.18)',
-            background: '#FFFFFF',
-            border: '2px solid #2B4C7E',
-            borderRadius: 6,
-            padding: '6px 10px',
-            fontSize: 11,
-            fontWeight: 700,
-            color: '#1E3560',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-          }}
-        >
-          <Tag color="#2B4C7E" style={{ margin: 0, fontWeight: 700, fontSize: 10, borderRadius: 4 }}>
-            {store.blueprints.find((e) => e.id === customDraggingId)?.subjectCode || 'Subject'}
-          </Tag>
-          <span>
-            {store.blueprints.find((e) => e.id === customDraggingId)?.offerCode || ''}
-          </span>
-        </div>
-      )}
+      {/* ── Move Room Modal ────────────────────────────────────────── */}
+      <Modal
+        title="Move Schedule to Another Room"
+        open={moveRoomOpen}
+        onOk={handleConfirmMoveRoom}
+        onCancel={() => { setMoveRoomOpen(false); setMoveRoomBlockKey(null); }}
+        okText="Move"
+        okButtonProps={{ disabled: !moveTargetRoom || !moveTargetBuilding }}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <div>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Building</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="Select building"
+              value={moveTargetBuilding}
+              onChange={(val) => { setMoveTargetBuilding(val); setMoveTargetRoom(null); }}
+              options={buildingOptions}
+              allowClear
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Room</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="Select room"
+              value={moveTargetRoom}
+              onChange={(val) => setMoveTargetRoom(val)}
+              options={filteredRoomOptions}
+              allowClear
+            />
+          </div>
+        </Space>
+      </Modal>
+
+      {/* ── Export Room Timetable (Excel) Modal ────────────────────── */}
+      <Modal
+        title="Export Room Timetable to Excel"
+        open={exportRoomModalOpen}
+        onOk={async () => {
+          if (!exportRoomRoom) return;
+          setExportRoomModalOpen(false);
+          const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}_${exportRoomRoom.replace(/[|]/g, '_')}.xlsx` });
+          const selectedPath = await save({
+            title: 'Export Room Timetable',
+            defaultPath: resolvedPath,
+            filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
+          });
+          if (!selectedPath) return;
+          const entriesToExport = filterEntriesForExport(
+            store.instances, store.hiddenDays, true, viewStart, viewEnd, true,
+          ).filter((e) =>
+            e.schedules.some((s) => {
+              const roomVal = s.rooms.length > 0 ? s.rooms[0] : '';
+              return roomVal === exportRoomRoom;
+            })
+          );
+          try {
+            await exportToXlsx(
+              entriesToExport, `${timetableName}_${exportRoomRoom.replace(/[|]/g, '_')}.xlsx`,
+              store.hiddenDays, true, viewStart, viewEnd, true,
+              selectedPath,
+            );
+            messageApi.success(`Exported room timetable to ${selectedPath.split(/[\\/]/).pop()}`);
+          } catch (e: unknown) {
+            messageApi.error(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        }}
+        onCancel={() => setExportRoomModalOpen(false)}
+        okText="Export"
+        okButtonProps={{ disabled: !exportRoomRoom }}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <div>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Building</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="Select building"
+              value={exportRoomBuilding}
+              onChange={(val) => { setExportRoomBuilding(val); setExportRoomRoom(null); }}
+              options={buildingOptions}
+              allowClear
+            />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Room</div>
+            <Select
+              style={{ width: '100%' }}
+              placeholder="Select room"
+              value={exportRoomRoom}
+              onChange={(val) => setExportRoomRoom(val)}
+              options={filteredExportRoomOptions}
+              allowClear
+            />
+          </div>
+        </Space>
+      </Modal>
+
+      {/* ── Import Blueprints from Excel Modal ─────────────────────── */}
+      <Modal
+        title="Import Blueprints from Excel"
+        open={importExcelModalOpen}
+        onCancel={() => { setImportExcelModalOpen(false); setImportExcelFileBytes(null); setImportExcelFileName(''); setImportExcelMapping({}); setImportExcelSkipped([]); setImportExcelPreviewRows(undefined); }}
+        footer={null}
+        width={560}
+      >
+        {!importExcelFileBytes ? (
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <Text type="secondary">
+              Select an Excel file (.xlsx) containing blueprint data.
+            </Text>
+            <Button
+              onClick={async () => {
+                const filePath = await open({
+                  title: 'Select Excel File',
+                  filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
+                  multiple: false,
+                  directory: false,
+                });
+                if (!filePath || typeof filePath !== 'string') return;
+                setImportExcelLoading(true);
+                try {
+                  const bytes = await invoke<number[]>('read_file_bytes', { path: filePath });
+                  const uint8 = new Uint8Array(bytes);
+                  
+                  // Auto-detect column mapping from header row
+                  let bpDetected = {};
+                  let schedDetected = {};
+                  let rawRows: string[][] = [];
+                  try {
+                    const workbook = new ExcelJS.Workbook();
+                    await workbook.xlsx.load(uint8 as any);
+                    const worksheet = workbook.worksheets[0];
+                    if (worksheet) {
+                      bpDetected = detectBlueprintColumns(worksheet);
+                      schedDetected = detectScheduleColumns(worksheet);
+
+                      // Extract raw preview rows (first 6 data rows)
+                      worksheet.eachRow((row, rowNumber) => {
+                        if (rowNumber === 1) return;
+                        if (rawRows.length >= 6) return false;
+                        const rowData: string[] = [];
+                        row.eachCell({ includeEmpty: true }, (cell: any) => {
+                          rowData.push(cell.value?.toString()?.trim() || '');
+                        });
+                        rawRows.push(rowData);
+                      });
+                    }
+                  } catch {
+                    bpDetected = {};
+                    schedDetected = {};
+                    rawRows = [];
+                  }
+
+                  // Set all states in a single batch after the await is completed
+                  setImportExcelMapping(bpDetected);
+                  setImportExcelScheduleMapping(schedDetected);
+                  setImportExcelPreviewRows(rawRows.length > 0 ? rawRows : undefined);
+                  setImportExcelFileName(filePath.split(/[\\/]/).pop() || '');
+                  setImportExcelFileBytes(uint8);
+                } catch (e: unknown) {
+                  messageApi.error(`Failed to read file: ${e instanceof Error ? e.message : String(e)}`);
+                } finally {
+                  setImportExcelLoading(false);
+                }
+              }}
+              loading={importExcelLoading}
+            >
+              Select Excel File
+            </Button>
+            {importExcelFileName && (
+              <Text style={{ fontSize: 12 }}>Selected: {importExcelFileName}</Text>
+            )}
+          </Space>
+        ) : (
+          <ColumnMappingForm
+            key={importExcelFileName}
+            initialMapping={importExcelMapping}
+            initialScheduleMapping={importExcelScheduleMapping}
+            onImport={handleExcelImport}
+            loading={importExcelLoading}
+            onSearchAllColumns={async () => {
+              if (!importExcelFileBytes) return { mapping: {}, scheduleMapping: {} };
+              const wb = new ExcelJS.Workbook();
+              await wb.xlsx.load(importExcelFileBytes as any);
+              const ws = wb.worksheets[0];
+              if (!ws) return { mapping: {}, scheduleMapping: {} };
+              const bpDetected = detectBlueprintColumns(ws);
+              const schedDetected = detectScheduleColumns(ws);
+              return { mapping: bpDetected, scheduleMapping: schedDetected };
+            }}
+            worksheetRows={importExcelPreviewRows}
+          />
+        )}
+      </Modal>
+
+      {/* Skipped Rows Drawer */}
+      <Drawer
+        title="Skipped Rows"
+        placement="right"
+        width={400}
+        onClose={() => setImportExcelSkippedDrawerOpen(false)}
+        open={importExcelSkippedDrawerOpen}
+      >
+        {importExcelSkipped.length === 0 ? (
+          <Text type="secondary">No rows were skipped.</Text>
+        ) : (
+          <List
+            size="small"
+            dataSource={importExcelSkipped}
+            renderItem={(item) => <List.Item><Text style={{ fontSize: 12 }}>{item}</Text></List.Item>}
+          />
+        )}
+      </Drawer>
     </ConfigProvider>
   );
 }

@@ -42,7 +42,7 @@ export function PlacedSchedules({
     >
       <div style={{ padding: '12px 16px', borderBottom: '1px solid #E4E9F0', background: '#F8FAFC' }}>
         <Text strong style={{ fontSize: 13, color: '#1E3560' }}>
-          <CalendarOutlined style={{ marginRight: 6 }} /> Placed Schedules ({scheduleItems.length})
+          <CalendarOutlined style={{ marginRight: 6 }} /> Timetable Schedules ({scheduleItems.length})
         </Text>
       </div>
 
@@ -57,7 +57,7 @@ export function PlacedSchedules({
 
             const menuItems = [
               { label: 'Delete Schedule Slot', key: 'delete', icon: <DeleteOutlined />, danger: true },
-              { label: 'Go to entry', key: 'goto', icon: <AimOutlined /> },
+              { label: 'Go to Blueprint', key: 'goto', icon: <AimOutlined /> },
             ];
 
             return (
@@ -72,7 +72,17 @@ export function PlacedSchedules({
                     } else if (key === 'goto') {
                       const el = document.getElementById(`subject-card-${entry.id}`);
                       if (el) {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        const container = el.closest('[class*="blueprint-list"]') || el.parentElement;
+                        if (container) {
+                          const containerRect = container.getBoundingClientRect();
+                          const elRect = el.getBoundingClientRect();
+                          const offset = elRect.top - containerRect.top - containerRect.height / 2 + elRect.height / 2;
+                          container.scrollBy({ top: offset, behavior: 'smooth' });
+                        }
+                        el.classList.remove('highlight-pulse');
+                        void el.offsetWidth;
+                        el.classList.add('highlight-pulse');
+                        setTimeout(() => el.classList.remove('highlight-pulse'), 1500);
                         el.focus();
                       }
                     }

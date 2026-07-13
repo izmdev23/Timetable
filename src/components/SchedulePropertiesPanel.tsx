@@ -1,4 +1,4 @@
-import { Form, Input, Select, Button, TimePicker, Divider, Typography, Space } from 'antd';
+import { Form, Input, Select, Button, TimePicker, Divider, Typography, Space, AutoComplete } from 'antd';
 import { SaveOutlined, CloseOutlined, DeleteOutlined } from '@ant-design/icons';
 import { useEffect } from 'react';
 import dayjs from 'dayjs';
@@ -14,6 +14,7 @@ interface SchedulePropertiesPanelProps {
   onSave: (updatedEntry: SubjectEntry) => void;
   onCancel: () => void;
   onDeleteSchedule: (entryId: string, scheduleId: string) => void;
+  disabled?: boolean;
 }
 
 interface FormValues {
@@ -37,7 +38,8 @@ export function SchedulePropertiesPanel({
   onSave,
   onCancel,
   onDeleteSchedule,
-}: SchedulePropertiesPanelProps) {
+  disabled,
+}: SchedulePropertiesPanelProps & { disabled?: boolean }) {
   const [form] = Form.useForm<FormValues>();
 
   useEffect(() => {
@@ -144,6 +146,11 @@ export function SchedulePropertiesPanel({
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 16px' }}>
+        {disabled ? (
+          <div style={{ padding: '24px 0', textAlign: 'center', color: '#7A8BA8', fontSize: 12 }}>
+            Multiple blocks selected — edit not available
+          </div>
+        ) : (
         <Form
           form={form}
           layout="vertical"
@@ -167,10 +174,13 @@ export function SchedulePropertiesPanel({
           </Form.Item>
 
           <Form.Item name="assignedTeacherName" label="Instructor">
-            <Select
+            <AutoComplete
               allowClear
               placeholder="Unassigned"
               options={instructors}
+              filterOption={(inputValue, option) =>
+                (option?.label as string)?.toLowerCase().includes(inputValue.toLowerCase())
+              }
             />
           </Form.Item>
 
@@ -249,6 +259,7 @@ export function SchedulePropertiesPanel({
             </Button>
           </Form.Item>
         </Form>
+        )}
       </div>
     </div>
   );
