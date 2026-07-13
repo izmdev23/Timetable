@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Timetable",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "identifier": "com.timetable.app",
   "build": {
     "frontendDist": "../dist",
@@ -38,7 +38,9 @@
     ],
     "fileAssociations": [
       {
-        "ext": ["ttcl"],
+        "ext": [
+          "ttcl"
+        ],
         "name": "Timetable Collection",
         "description": "Timetable Collection File",
         "role": "Editor"

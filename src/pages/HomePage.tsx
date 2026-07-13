@@ -288,10 +288,11 @@ export function HomePage({ onOpen }: HomePageProps) {
     setExportModalOpen(false);
     try {
       const db = await Database.load('sqlite:timetable.db');
-      const rows = await db.select<{ entries_json: string }[]>(
-        'SELECT entries_json FROM timetables WHERE id = $1', [exportTarget.id],
+      const rows = await db.select<{ entries_json: string; theme?: string }[]>(
+        'SELECT entries_json, theme FROM timetables WHERE id = $1', [exportTarget.id],
       );
       const entries: SubjectEntry[] = JSON.parse(rows[0]?.entries_json ?? '[]');
+      const exportTheme: string = rows[0]?.theme || 'blue';
 
       let entriesToProcess = entries;
       if (exportFilterType === 'room' && exportSelectedRoom) {
@@ -322,6 +323,7 @@ export function HomePage({ onOpen }: HomePageProps) {
         await exportToXlsx(
           entriesToProcess, `${exportTarget.name}.xlsx`,
           exportTarget.hiddenDays, excludeHiddenDays, viewStart, viewEnd, excludeTimeWindow,
+          undefined, exportTheme,
         );
       }
     } catch (e: unknown) {

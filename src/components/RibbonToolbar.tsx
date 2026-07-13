@@ -1,4 +1,5 @@
-import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, Tabs, Card, Dropdown, message } from 'antd';
+import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, Tabs, Card, Dropdown, message, Modal } from 'antd';
+import { Sketch } from '@uiw/react-color';
 import {
   SaveOutlined,
   DownloadOutlined,
@@ -7,6 +8,11 @@ import {
   UndoOutlined,
   RedoOutlined,
   LinkOutlined,
+  FilterOutlined,
+  UserOutlined,
+  SolutionOutlined,
+  HomeOutlined,
+  BgColorsOutlined,
 } from '@ant-design/icons';
 import type { DayOfWeek } from '../types';
 import { DAY_ORDER } from '../types';
@@ -126,6 +132,19 @@ export function RibbonToolbar({
   const [editingDynamicId, setEditingDynamicId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('department');
   const [sortOrder, setSortOrder] = useState<'created' | 'name-asc' | 'name-desc'>('created');
+
+  const isCustom = theme && theme.startsWith('custom:');
+  const customHex = isCustom ? theme.split(':')[1] : '#2B4C7E';
+
+  const [customColorModalOpen, setCustomColorModalOpen] = useState(false);
+  const [tempCustomColor, setTempCustomColor] = useState(customHex);
+
+  // Sync tempCustomColor when theme changes externally
+  useEffect(() => {
+    if (isCustom) {
+      setTempCustomColor(customHex);
+    }
+  }, [customHex, isCustom]);
 
   // Watch dataType to change form fields dynamically
   const formDataType = Form.useWatch('dataType', form) ?? 'department';
@@ -255,87 +274,136 @@ export function RibbonToolbar({
           <Select
             value={filterType}
             onChange={onFilterTypeChange}
-            style={{ width: 130 }}
+            style={{ width: 110 }}
             options={[
-              { label: 'All Schedules', value: 'all' },
-              { label: 'Student Schedule', value: 'student' },
-              { label: 'Teacher Schedule', value: 'teacher' },
-              { label: 'Room Schedule', value: 'room' },
+              { label: <span><FilterOutlined style={{ marginRight: 6, color: '#1890ff' }} />All</span>, value: 'all' },
+              { label: <span><UserOutlined style={{ marginRight: 6, color: '#722ed1' }} />Student</span>, value: 'student' },
+              { label: <span><SolutionOutlined style={{ marginRight: 6, color: '#fa8c16' }} />Instructor</span>, value: 'teacher' },
+              { label: <span><HomeOutlined style={{ marginRight: 6, color: '#52c41a' }} />Room</span>, value: 'room' },
             ]}
           />
           {filterType === 'student' && (
             <Select
               value={selectedStudentKey}
               onChange={onSelectedStudentKeyChange}
-              style={{ width: 150 }}
-              options={studentSchedules}
-              placeholder="Select Student"
+              style={{ width: 140 }}
+              options={studentSchedules.map(opt => ({
+                label: <span><UserOutlined style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
+                value: opt.value
+              }))}
+              placeholder={<span><UserOutlined style={{ marginRight: 6 }} />Student</span>}
               disabled={studentSchedules.length === 0}
             />
           )}
           {filterType === 'teacher' && (
             <Select
+              showSearch
+              filterOption={(input, option) =>
+                String(option?.value ?? '').toLowerCase().includes(input.toLowerCase())
+              }
               value={selectedTeacher}
               onChange={onSelectedTeacherChange}
-              style={{ width: 150 }}
-              options={teacherOptions}
-              placeholder="Select Teacher"
+              style={{ width: 140 }}
+              options={teacherOptions.map(opt => ({
+                label: <span><SolutionOutlined style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
+                value: opt.value
+              }))}
+              placeholder={<span><SolutionOutlined style={{ marginRight: 6 }} />Instructor</span>}
               disabled={teacherOptions.length === 0}
             />
           )}
           {filterType === 'room' && (
-            <Space size={4}>
+            <Space size={2}>
               <Select
                 mode="tags"
                 tokenSeparators={[',']}
                 value={selectedRooms}
                 onChange={onSelectedRoomsChange}
-                style={{ width: 150 }}
-                placeholder="Select Rooms"
-                options={[{ label: 'All', value: 'all' }, ...roomOptions]}
+                style={{ width: 140 }}
+                placeholder={<span><HomeOutlined style={{ marginRight: 6 }} />Rooms</span>}
+                options={[{ label: 'All', value: 'all' }, ...roomOptions].map(opt => ({
+                  label: <span><HomeOutlined style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
+                  value: opt.value
+                }))}
                 maxTagCount="responsive"
               />
-              <Button onClick={() => onSelectedRoomsChange(['all'])}>
-                Clear All
+              <Button size="small" onClick={() => onSelectedRoomsChange(['all'])} style={{ fontSize: 10, height: 30 }}>
+                Clear
               </Button>
             </Space>
           )}
           <Select
             value={theme}
-            onChange={onThemeChange}
-            style={{ width: 160 }}
-            options={[
-              { label: (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#2B4C7E' }} />
-                  <span>Academic Blue</span>
-                </div>
-              ), value: 'blue' },
-              { label: (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#3D6B50' }} />
-                  <span>Emerald Forest</span>
-                </div>
-              ), value: 'green' },
-              { label: (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#6B3D7E' }} />
-                  <span>Amethyst Purple</span>
-                </div>
-              ), value: 'purple' },
-              { label: (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#B35446' }} />
-                  <span>Sunset Terracotta</span>
-                </div>
-              ), value: 'orange' },
-              { label: (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 10, height: 10, borderRadius: 2, background: '#3D4F6B' }} />
-                  <span>Midnight Slate</span>
-                </div>
-              ), value: 'charcoal' },
-            ]}
+            onChange={(val) => {
+              if (val === 'custom_trigger') {
+                setCustomColorModalOpen(true);
+              } else {
+                onThemeChange(val);
+              }
+            }}
+            style={{ width: 140 }}
+            suffixIcon={<BgColorsOutlined />}
+            options={(() => {
+              const options = [
+                { label: (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, background: '#2B4C7E' }} />
+                    <span>Academic Blue</span>
+                  </div>
+                ), value: 'blue' },
+                { label: (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, background: '#3D6B50' }} />
+                    <span>Emerald Forest</span>
+                  </div>
+                ), value: 'green' },
+                { label: (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, background: '#6B3D7E' }} />
+                    <span>Amethyst Purple</span>
+                  </div>
+                ), value: 'purple' },
+                { label: (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, background: '#B35446' }} />
+                    <span>Sunset Terracotta</span>
+                  </div>
+                ), value: 'orange' },
+                { label: (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{ width: 10, height: 10, borderRadius: 2, background: '#3D4F6B' }} />
+                    <span>Midnight Slate</span>
+                  </div>
+                ), value: 'charcoal' },
+              ];
+
+              if (isCustom) {
+                options.push({
+                  label: (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ width: 10, height: 10, borderRadius: 2, background: customHex }} />
+                      <span>Custom ({customHex})</span>
+                    </div>
+                  ), value: theme
+                });
+              }
+
+              options.push({
+                label: (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <div style={{
+                      width: 10,
+                      height: 10,
+                      borderRadius: 2,
+                      background: 'linear-gradient(45deg, red, orange, yellow, green, blue, purple)'
+                    }} />
+                    <span>Custom Color...</span>
+                  </div>
+                ), value: 'custom_trigger'
+              });
+
+              return options;
+            })()}
           />
           <Checkbox checked={bandedRows} onChange={(e) => onBandedRowsChange(e.target.checked)} style={{ fontSize: 11 }}>
             Banded
@@ -647,6 +715,27 @@ export function RibbonToolbar({
         </div>
       </div>
       </Drawer>
+
+      <Modal
+        title="Choose Custom Theme Color"
+        open={customColorModalOpen}
+        onOk={() => {
+          onThemeChange(`custom:${tempCustomColor}`);
+          setCustomColorModalOpen(false);
+        }}
+        onCancel={() => setCustomColorModalOpen(false)}
+        width={320}
+        styles={{ body: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', paddingTop: '12px' } }}
+        destroyOnClose
+      >
+        <Sketch
+          color={tempCustomColor}
+          onChange={(colorResult) => setTempCustomColor(colorResult.hex)}
+        />
+        <div style={{ fontSize: 12, marginTop: 8 }}>
+          Selected Color: <strong style={{ color: tempCustomColor }}>{tempCustomColor}</strong>
+        </div>
+      </Modal>
     </div>
   );
 }

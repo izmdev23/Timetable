@@ -1,17 +1,12 @@
-import { Button, Select, Typography, Drawer, List, ConfigProvider, Space } from 'antd';
-import { LinkOutlined, BellFilled, CloseCircleFilled } from '@ant-design/icons';
+import { Button, Select, Typography, Drawer, List, ConfigProvider, Space, Badge } from 'antd';
+import { LinkOutlined, BellFilled, CloseCircleFilled, ReloadOutlined } from '@ant-design/icons';
 import type { SubjectEntry, ConflictInfo } from '../types';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 
 const { Text } = Typography;
 
-const THEME_BG: Record<string, string> = {
-  blue: '#1E3560',
-  green: '#2A4B37',
-  purple: '#4A2758',
-  orange: '#8A520A',
-  charcoal: '#27354B',
-};
+/** Fixed Academic Blue background for the status bar — not affected by theme dropdown */
+const STATUS_BAR_BG = '#1E3560';
 
 interface StatusBarProps {
   fileName: string | null;
@@ -25,8 +20,10 @@ interface StatusBarProps {
   onHighlightSchedule: (entryId: string, scheduleId: string) => void;
   isDirty: boolean;
   statusMessage?: string;
-  theme?: string;
+
   importNotifications?: string[];
+  roomConflictSummary?: Array<{ room: string; conflictCount: number; roomValue: string }>;
+  onRefreshRoomConflicts?: () => void;
 }
 
 export function StatusBar({
@@ -41,14 +38,18 @@ export function StatusBar({
   onHighlightSchedule,
   isDirty,
   statusMessage,
-  theme = 'blue',
   importNotifications = [],
+  roomConflictSummary = [],
+  onRefreshRoomConflicts,
 }: StatusBarProps) {
   const [notifDrawerOpen, setNotifDrawerOpen] = useState(false);
 
-  const bgColor = THEME_BG[theme] || THEME_BG.blue;
+  const bgColor = STATUS_BAR_BG;
 
   const latestConflict = allConflictsList.length > 0 ? allConflictsList[allConflictsList.length - 1] : null;
+  const totalConflicts = useMemo(() => roomConflictSummary.reduce((sum, r) => sum + r.conflictCount, 0), [roomConflictSummary]);
+  const checkedRooms = roomConflictSummary.length;
+  const roomsWithConflicts = roomConflictSummary.filter(r => r.conflictCount > 0).length;
 
   return (
     <div
@@ -140,22 +141,29 @@ export function StatusBar({
             placeholder="Select Room"
           />
         </ConfigProvider>
-        <Button
+        <Badge
+          count={totalConflicts}
           size="small"
-          type="text"
-          icon={<BellFilled style={{ fontSize: '14px', color: allConflictsList.length > 0 ? '#ff6b6b' : (importNotifications.length > 0 ? '#1890ff' : 'rgba(255,255,255,0.7)') }} />}
-          onClick={() => setNotifDrawerOpen(true)}
-          style={{
-            border: 'none',
-            padding: '0 6px',
-            height: '22px',
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: 'rgba(255,255,255,0.7)',
-          }}
-          className="status-bar-btn"
-        />
+          offset={[0, 2]}
+          styles={{ root: { lineHeight: '14px' } }}
+        >
+          <Button
+            size="small"
+            type="text"
+            icon={<BellFilled style={{ fontSize: '14px', color: allConflictsList.length > 0 || totalConflicts > 0 ? '#ff6b6b' : (importNotifications.length > 0 ? '#1890ff' : 'rgba(255,255,255,0.7)') }} />}
+            onClick={() => setNotifDrawerOpen(true)}
+            style={{
+              border: 'none',
+              padding: '0 6px',
+              height: '22px',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'rgba(255,255,255,0.7)',
+            }}
+            className="status-bar-btn"
+          />
+        </Badge>
       </div>
 
       {/* Notifications Drawer */}
@@ -166,7 +174,7 @@ export function StatusBar({
         onClose={() => setNotifDrawerOpen(false)}
         open={notifDrawerOpen}
       >
-        {allConflictsList.length === 0 && importNotifications.length === 0 ? (
+        {(allConflictsList.length === 0 && importNotifications.length === 0 && roomConflictSummary.length === 0) ? (
           <div style={{ padding: 12, color: '#7A8BA8', fontSize: 12 }}>No notifications.</div>
         ) : (
           <Space direction="vertical" style={{ width: '100%' }} size={16}>
@@ -217,6 +225,59 @@ export function StatusBar({
                 )}
               />
             )}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ fontWeight: 600, color: '#faad14', fontSize: '13px' }}>Room Conflict Summary</span>
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  onClick={onRefreshRoomConflicts}
+                  style={{ fontSize: 11 }}
+                >
+                  Check Now
+                </Button>
+              </div>
+              {roomConflictSummary.length === 0 ? (
+                <div style={{ padding: '4px 0', fontSize: 12, color: '#8c8c8c' }}>
+                  Click "Check Now" to scan all rooms for conflicts.
+                </div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 11, color: '#8c8c8c', marginBottom: 8 }}>
+                    {checkedRooms} room{checkedRooms > 1 ? 's' : ''} checked — {roomsWithConflicts} have conflicts, {checkedRooms - roomsWithConflicts} are clean
+                  </div>
+                  <List
+                    size="small"
+                    dataSource={roomConflictSummary}
+                    renderItem={(item) => (
+                      <div
+                        onClick={() => onActiveRoomChange(item.roomValue)}
+                        style={{
+                          padding: '4px 8px',
+                          fontSize: '12px',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          cursor: 'pointer',
+                          borderRadius: 3,
+                          transition: 'background-color 0.15s ease',
+                        }}
+                        className="conflict-hover-item"
+                      >
+                        <span>{item.room}</span>
+                        <span style={{
+                          fontWeight: 600,
+                          color: item.conflictCount === 0 ? '#52c41a' : item.conflictCount <= 2 ? '#faad14' : '#ff4d4f',
+                          fontSize: 11,
+                        }}>
+                          {item.conflictCount === 0 ? 'Clean' : `${item.conflictCount} conflict${item.conflictCount > 1 ? 's' : ''}`}
+                        </span>
+                      </div>
+                    )}
+                  />
+                </>
+              )}
+            </div>
           </Space>
         )}
       </Drawer>

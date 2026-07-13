@@ -15,6 +15,7 @@ import {
 } from 'antd';
 import { SaveOutlined, CloseOutlined } from '@ant-design/icons';
 import { useState, useEffect } from 'react';
+import { Sketch } from '@uiw/react-color';
 import type { SubjectEntry, ConflictInfo, FormState } from '../types';
 
 const { Text } = Typography;
@@ -109,6 +110,7 @@ export function BlueprintForm({
   const [form] = Form.useForm<FormValues>();
   const [conflicts, setConflicts] = useState<ConflictInfo[]>([]);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
+  const [showCustomColorPicker, setShowCustomColorPicker] = useState(false);
   const colorRandom = Form.useWatch('colorRandom', form) ?? true;
   const selectedColor = Form.useWatch('color', form) ?? '#2196F3';
 
@@ -287,31 +289,80 @@ export function BlueprintForm({
   }
 
   const colorGrid = (
-    <div style={{ width: 260, maxHeight: 280, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
-      {Object.entries(MATERIAL_PALETTE).map(([name, shades]) => (
-        <div key={name} style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
-          {shades.map((hex) => (
-            <div
-              key={hex}
-              onClick={() => {
-                form.setFieldsValue({ color: hex });
-                updateStoreFormState({ ...form.getFieldsValue(), color: hex });
-                setColorPickerOpen(false);
-              }}
-              style={{
-                width: 20,
-                height: 20,
-                background: hex,
-                borderRadius: 3,
-                cursor: 'pointer',
-                border: selectedColor === hex ? '2px solid #333' : '1px solid rgba(0,0,0,0.1)',
-                flexShrink: 0,
-              }}
-              title={hex}
-            />
+    <div style={{ width: 260, display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {/* Tabs Header */}
+      <div style={{ display: 'flex', borderBottom: '1px solid #f0f0f0', marginBottom: 4, paddingBottom: 4 }}>
+        <div
+          onClick={() => setShowCustomColorPicker(false)}
+          style={{
+            flex: 1,
+            textAlign: 'center',
+            cursor: 'pointer',
+            fontWeight: !showCustomColorPicker ? 'bold' : 'normal',
+            color: !showCustomColorPicker ? '#1e3560' : '#666',
+            borderBottom: !showCustomColorPicker ? '2px solid #1e3560' : 'none',
+            padding: '4px 0',
+            fontSize: 12
+          }}
+        >
+          Palette
+        </div>
+        <div
+          onClick={() => setShowCustomColorPicker(true)}
+          style={{
+            flex: 1,
+            textAlign: 'center',
+            cursor: 'pointer',
+            fontWeight: showCustomColorPicker ? 'bold' : 'normal',
+            color: showCustomColorPicker ? '#1e3560' : '#666',
+            borderBottom: showCustomColorPicker ? '2px solid #1e3560' : 'none',
+            padding: '4px 0',
+            fontSize: 12
+          }}
+        >
+          Custom
+        </div>
+      </div>
+
+      {!showCustomColorPicker ? (
+        <div style={{ maxHeight: 240, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {Object.entries(MATERIAL_PALETTE).map(([name, shades]) => (
+            <div key={name} style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+              {shades.map((hex) => (
+                <div
+                  key={hex}
+                  onClick={() => {
+                    form.setFieldsValue({ color: hex });
+                    updateStoreFormState({ ...form.getFieldsValue(), color: hex });
+                    setColorPickerOpen(false);
+                  }}
+                  style={{
+                    width: 20,
+                    height: 20,
+                    background: hex,
+                    borderRadius: 3,
+                    cursor: 'pointer',
+                    border: selectedColor === hex ? '2px solid #333' : '1px solid rgba(0,0,0,0.1)',
+                    flexShrink: 0,
+                  }}
+                  title={hex}
+                />
+              ))}
+            </div>
           ))}
         </div>
-      ))}
+      ) : (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '4px 0' }}>
+          <Sketch
+            color={selectedColor}
+            onChange={(colorResult) => {
+              const hex = colorResult.hex;
+              form.setFieldsValue({ color: hex });
+              updateStoreFormState({ ...form.getFieldsValue(), color: hex });
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 
@@ -480,7 +531,15 @@ export function BlueprintForm({
                 content={colorGrid}
                 trigger="click"
                 open={!colorRandom && colorPickerOpen}
-                onOpenChange={setColorPickerOpen}
+                onOpenChange={(visible) => {
+                  setColorPickerOpen(visible);
+                  if (visible) {
+                    const isMaterial = Object.values(MATERIAL_PALETTE).some((shades) =>
+                      shades.includes(selectedColor)
+                    );
+                    setShowCustomColorPicker(!isMaterial);
+                  }
+                }}
                 placement="bottomRight"
               >
                 <Button

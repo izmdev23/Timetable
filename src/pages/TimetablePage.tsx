@@ -7,7 +7,7 @@ import { getLinks, getConnectedKeys } from '../utils/linkUtils';
 import { getThemeConfig } from '../theme';
 import { BlueprintList } from '../components/BlueprintList';
 import { TimetableGrid } from '../components/TimetableGrid';
-import { exportToXlsx } from '../utils/exportXlsx';
+import { exportToXlsx, exportToXlsxBatch } from '../utils/exportXlsx';
 import * as ExcelJS from 'exceljs';
 import { usePreferences } from '../context/PreferencesContext';
 import { save, ask, open } from '@tauri-apps/plugin-dialog';
@@ -184,9 +184,42 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [selectedRooms, setSelectedRooms] = useState<string[]>([]);
   const [hiddenEntryIds, setHiddenEntryIds] = useState<string[]>([]);
   const [activeRoom, setActiveRoom] = useState<string | null>(null);
+  const gridWrapperRef = useRef<HTMLDivElement>(null);
+
+  const handleActiveRoomChange = useCallback((newRoom: string) => {
+    if (activeRoom === newRoom) return;
+    const blocks = gridWrapperRef.current?.querySelectorAll('.timetable-fade-target');
+    if (blocks && blocks.length > 0) {
+      gsap.to(blocks, {
+        opacity: 0,
+        duration: 0.15,
+        ease: 'power2.inOut',
+        onComplete: () => {
+          setActiveRoom(newRoom);
+        }
+      });
+    } else {
+      setActiveRoom(newRoom);
+    }
+  }, [activeRoom]);
+
+  // Handle fade-in when activeRoom changes
+  useEffect(() => {
+    const blocks = gridWrapperRef.current?.querySelectorAll('.timetable-fade-target');
+    if (blocks && blocks.length > 0) {
+      gsap.fromTo(
+        blocks,
+        { opacity: 0 },
+        { opacity: 1, duration: 0.25, ease: 'power2.inOut' }
+      );
+    }
+  }, [activeRoom]);
+
   const [selectedScheduleBlock, setSelectedScheduleBlock] = useState<{ entry: SubjectEntry; schedule: Schedule } | null>(null);
   const selectedScheduleBlockRef = useRef(selectedScheduleBlock);
   selectedScheduleBlockRef.current = selectedScheduleBlock;
+  const storeRef = useRef(store);
+  storeRef.current = store;
   const [selectedBlockKeys, setSelectedBlockKeys] = useState<Set<string>>(new Set());
   const [clipboardBlocks, setClipboardBlocks] = useState<Array<{ entryId: string; schedule: Schedule }>>([]);
   const [subjectDrawerOpen, setSubjectDrawerOpen] = useState(false);
@@ -203,6 +236,11 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [exportRoomModalOpen, setExportRoomModalOpen] = useState(false);
   const [exportRoomBuilding, setExportRoomBuilding] = useState<string | null>(null);
   const [exportRoomRoom, setExportRoomRoom] = useState<string | null>(null);
+
+  // Batch Export
+  const [exportBatchMode, setExportBatchMode] = useState(false);
+  const [exportBatchBuildings, setExportBatchBuildings] = useState<string[]>([]);
+  const [exportBatchRooms, setExportBatchRooms] = useState<string[]>([]);
 
   // Import Excel Modal
   const [importExcelModalOpen, setImportExcelModalOpen] = useState(false);
@@ -237,6 +275,20 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [undoRedoAction, setUndoRedoAction] = useState<'Undo' | 'Redo'>('Undo');
   const [undoRedoProgress, setUndoRedoProgress] = useState(0);
 
+  // Available Room Modal States
+  const [availRoomModalOpen, setAvailRoomModalOpen] = useState(false);
+  const [availRoomBlockKey, setAvailRoomBlockKey] = useState<string | null>(null);
+  const [availRoomsList, setAvailRoomsList] = useState<Array<{ room: string; conflictCount: number }>>([]);
+  const [selectedAvailRoom, setSelectedAvailRoom] = useState<string | null>(null);
+  const [availCurrentRoomLabel, setAvailCurrentRoomLabel] = useState<string>('');
+
+  // Save Loading
+  const [saveLoading, setSaveLoading] = useState(false);
+  const saveInProgressRef = useRef(false);
+
+  // Room Conflict Check (on-demand)
+  const [roomConflictCheckTrigger, setRoomConflictCheckTrigger] = useState(0);
+
   // Link Binding States
   const [linkingModeActive, setLinkingModeActive] = useState(false);
   const [linkingFirstBlockKey, setLinkingFirstBlockKey] = useState<string | null>(null);
@@ -246,6 +298,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const svgRef = useRef<SVGSVGElement | null>(null);
   const lineElsRef = useRef<Map<string, SVGLineElement>>(new Map());
   const linkPairsRef = useRef<Array<{ childKey: string; parentKey: string }>>([]);
+  const updateLinesRef = useRef<() => void>(() => {});
 
   // Setup effect: build SVG + line elements when link data changes
   useEffect(() => {
@@ -295,10 +348,13 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         line.setAttribute('stroke-width', '3');
         line.setAttribute('stroke-dasharray', '5,5');
         line.style.filter = 'drop-shadow(0px 2px 4px rgba(0,0,0,0.3))';
+        line.style.transition = 'opacity 0.2s ease';
         svg.appendChild(line);
         lineElsRef.current.set(childKey, line);
       }
     }
+
+    updateLinesRef.current();
 
     const lineEls = lineElsRef.current;
     const linkPairs = linkPairsRef.current;
@@ -323,18 +379,21 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         if (!cEl || !pEl) continue;
         const cr = cEl.getBoundingClientRect();
         const pr = pEl.getBoundingClientRect();
-        const cVisible = cr.bottom > 0 && cr.top < window.innerHeight;
-        const pVisible = pr.bottom > 0 && pr.top < window.innerHeight;
+        const cVisible = cr.bottom > -50 && cr.top < window.innerHeight + 50 && cr.right > -50 && cr.left < window.innerWidth + 50;
+        const pVisible = pr.bottom > -50 && pr.top < window.innerHeight + 50 && pr.right > -50 && pr.left < window.innerWidth + 50;
         const line = lineElsRef.current.get(childKey);
         if (!line) continue;
         if (cVisible && pVisible) {
           gsap.set(line, { attr: { x1: cr.left + cr.width / 2, y1: cr.top + cr.height / 2, x2: pr.left + pr.width / 2, y2: pr.top + pr.height / 2 } });
-          line.style.removeProperty('display');
+          line.style.opacity = '1';
+          line.style.pointerEvents = 'auto';
         } else {
-          line.style.display = 'none';
+          line.style.opacity = '0';
+          line.style.pointerEvents = 'none';
         }
       }
     };
+    updateLinesRef.current = updateLines;
 
     let rafId: number | null = null;
     const rafUpdate = () => {
@@ -391,8 +450,16 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       const parts = d.displayAs.split('|');
       if (parts[1]) buildings.add(parts[1]);
     }
+    for (const d of store.dynamicData.filter(d => d.dataType === 'building')) {
+      if (d.value) buildings.add(d.value);
+    }
+    for (const r of store.suggestions.rooms) {
+      if (!r) continue;
+      const parts = r.split('|');
+      if (parts[1]) buildings.add(parts[1]);
+    }
     return Array.from(buildings).sort().map(b => ({ label: b, value: b }));
-  }, [store.dynamicData]);
+  }, [store.dynamicData, store.suggestions.rooms]);
 
   const filteredRoomOptions = useMemo(() => {
     return roomOptions.filter(r => {
@@ -409,6 +476,22 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       return !exportRoomBuilding || building === exportRoomBuilding;
     });
   }, [roomOptions, exportRoomBuilding]);
+
+  const exportRoomLabelOptions = useMemo(() => {
+    return filteredExportRoomOptions.map(r => {
+      const parts = r.value.split('|');
+      return { ...r, label: parts[0] };
+    });
+  }, [filteredExportRoomOptions]);
+
+  const filteredBatchRoomOptions = useMemo(() => {
+    return roomOptions.filter(r => {
+      if (exportBatchBuildings.length === 0) return true;
+      const parts = r.value.split('|');
+      const building = parts[1] || '';
+      return exportBatchBuildings.includes(building);
+    });
+  }, [roomOptions, exportBatchBuildings]);
 
   const activeSelectedBlock = useMemo(() => {
     if (!selectedScheduleBlock) return null;
@@ -495,7 +578,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         if (!keys.has(key)) {
           keys.add(key);
           options.push({
-            label: `${entry.program} - Year ${entry.year} - ${entry.section}`,
+            label: `${entry.program} - ${entry.year}${entry.section}`,
             value: key,
           });
         }
@@ -617,6 +700,10 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [store.instances, filterType, selectedStudentKey, selectedTeacher, selectedRooms]);
 
   const gridEntries = useMemo(() => {
+    if (filterType === 'student' || filterType === 'teacher' || filterType === 'room') {
+      return filteredEntries.filter((e) => !hiddenEntryIds.includes(e.id));
+    }
+
     if (!activeRoom) return [];
     const activeRoomName = activeRoom.includes('|')
       ? activeRoom.split('|')[0].trim().toLowerCase()
@@ -638,7 +725,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         };
       })
       .filter((e) => e.schedules.length > 0 && !hiddenEntryIds.includes(e.id));
-  }, [filteredEntries, hiddenEntryIds, activeRoom]);
+  }, [filteredEntries, hiddenEntryIds, activeRoom, filterType]);
 
   const allConflictsList = useMemo(() => {
     const list: { entry: SubjectEntry; conflict: ConflictInfo }[] = [];
@@ -656,6 +743,31 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     return list;
   }, [gridEntries, store.detectConflicts]);
 
+  const roomConflictSummary = useMemo(() => {
+    if (roomConflictCheckTrigger === 0) return [];
+    const summary: { room: string; conflictCount: number; roomValue: string }[] = [];
+    for (const roomOption of roomOptions) {
+      const roomValue = roomOption.value;
+      const roomEntries = store.instances.filter(e =>
+        e.schedules.some(s => s.rooms?.some(r => r.trim().toLowerCase() === roomValue.trim().toLowerCase()))
+      );
+      const conflictPairKeys = new Set<string>();
+      for (const entry of roomEntries) {
+        const conflicts = store.detectConflicts(entry);
+        for (const c of conflicts) {
+          const key = [entry.id, c.conflictingEntry.id].sort().join('-');
+          conflictPairKeys.add(key);
+        }
+      }
+      summary.push({ room: roomOption.label, conflictCount: conflictPairKeys.size, roomValue });
+    }
+    return summary;
+  }, [store.instances, roomOptions, store.detectConflicts, roomConflictCheckTrigger]);
+
+  const handleRefreshRoomConflicts = useCallback(() => {
+    setRoomConflictCheckTrigger(n => n + 1);
+  }, []);
+
   // Save (Ctrl+S): save to .ttcl or prompt for path on first save
   useEffect(() => {
     if (saveTrigger === 0 || saveTrigger <= lastSaveTriggerRef.current) {
@@ -665,29 +777,30 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     lastSaveTriggerRef.current = saveTrigger;
 
     async function handleSave() {
-      if (collection.collectionPath) {
-        try {
+      if (saveInProgressRef.current) return;
+      saveInProgressRef.current = true;
+      setSaveLoading(true);
+      try {
+        if (collection.collectionPath) {
           await collection.saveCollection();
           store.markSaved();
           setStatusMessage('Saved');
-        } catch (e: unknown) {
-          messageApi.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
-        }
-      } else {
-        const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}.ttcl` });
-        const selectedPath = await save({
-          title: 'Save Collection',
-          defaultPath: resolvedPath,
-          filters: [{ name: 'Timetable Collection', extensions: ['ttcl'] }]
-        });
-        if (!selectedPath) return;
-        try {
+        } else {
+          const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}.ttcl` });
+          const selectedPath = await save({
+            title: 'Save Collection',
+            defaultPath: resolvedPath,
+            filters: [{ name: 'Timetable Collection', extensions: ['ttcl'] }]
+          });
+          if (!selectedPath) { setSaveLoading(false); saveInProgressRef.current = false; return; }
           await collection.saveCollectionAs(selectedPath);
           store.markSaved();
           setStatusMessage('Saved');
-        } catch (e: unknown) {
-          messageApi.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
         }
+      } catch (e: unknown) {
+        messageApi.error(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
+      } finally {
+        setTimeout(() => { setSaveLoading(false); saveInProgressRef.current = false; }, 300);
       }
     }
 
@@ -791,7 +904,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         await exportToXlsx(
           entriesToProcess, `${timetableName}.xlsx`,
           store.hiddenDays, prefs.excludeHiddenDays, viewStart, viewEnd, prefs.excludeTimeWindow,
-          selectedPath,
+          selectedPath, store.theme, store.bandedRows,
         );
         messageApi.success(`Exported Excel to ${selectedPath.split(/[\\\/]/).pop()}`);
       } catch (e: unknown) {
@@ -881,6 +994,9 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     lastExportExcelRoomTriggerRef.current = exportExcelRoomTrigger;
     setExportRoomBuilding(null);
     setExportRoomRoom(null);
+    setExportBatchMode(false);
+    setExportBatchBuildings([]);
+    setExportBatchRooms([]);
     setExportRoomModalOpen(true);
   }, [exportExcelRoomTrigger]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -899,23 +1015,23 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [store]);
 
   const handleEdit = useCallback((entry: SubjectEntry): void => {
-    store.startEdit(entry.id);
-  }, [store]);
+    storeRef.current.startEdit(entry.id);
+  }, []);
 
   const handleCancelEdit = useCallback((): void => {
-    store.cancelEdit();
+    storeRef.current.cancelEdit();
     setSelectedScheduleBlock(null);
     setSelectedBlockKeys(new Set());
     setLinkingFirstBlockKey(null);
     setLinkingHighlightedKeys(null);
-  }, [store]);
+  }, []);
 
   const handleSelectScheduleBlock = useCallback(async (entry: SubjectEntry, schedule: Schedule) => {
     if (linkingModeActive) {
       const key = `${entry.id}:${schedule.id}`;
       if (!linkingFirstBlockKey) {
         setLinkingFirstBlockKey(key);
-        const links = getLinks(store.dynamicData);
+        const links = getLinks(storeRef.current.dynamicData);
         if (links.has(key) || Array.from(links.values()).includes(key)) {
           const connected = getConnectedKeys(key, links);
           setLinkingHighlightedKeys(connected);
@@ -926,7 +1042,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         const firstKey = linkingFirstBlockKey;
         const secondKey = key;
         if (firstKey !== secondKey) {
-          const links = getLinks(store.dynamicData);
+          const links = getLinks(storeRef.current.dynamicData);
           const isSecondLinked = links.has(secondKey) || Array.from(links.values()).includes(secondKey);
           const isFirstChild = links.has(firstKey);
 
@@ -935,12 +1051,12 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           } else if (isFirstChild) {
             message.warning("The first slot is a child slot in a link group and cannot be a parent.");
           } else {
-            await store.addDynamicData('link', secondKey, firstKey);
+            await storeRef.current.addDynamicData('link', secondKey, firstKey);
             message.success("Schedule slots linked successfully.");
 
             const firstParts = firstKey.split(':');
             const secondParts = secondKey.split(':');
-            const latestEntries = store.instances;
+            const latestEntries = storeRef.current.instances;
             const firstEntry = latestEntries.find(e => e.id === firstParts[0]);
             const secondEntry = latestEntries.find(e => e.id === secondParts[0]);
 
@@ -961,7 +1077,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                 });
               }
 
-              store.updateInstance({
+              storeRef.current.updateInstance({
                 ...secondEntry,
                 subjectCode: firstEntry.subjectCode,
                 offerCode: firstEntry.offerCode,
@@ -983,7 +1099,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     } else {
       setSelectedScheduleBlock({ entry, schedule });
     }
-  }, [linkingModeActive, linkingFirstBlockKey, store]);
+  }, [linkingModeActive, linkingFirstBlockKey]);
 
   const handleToggleSelectBlock = useCallback((blockKey: string) => {
     setSelectedBlockKeys((prev) => {
@@ -1028,7 +1144,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     const newSelectedKeys: string[] = [];
     const newEntries: SubjectEntry[] = [];
     for (const { entryId, schedule } of clipboardBlocks) {
-      const originalEntry = store.instances.find(e => e.id === entryId);
+      const originalEntry = storeRef.current.instances.find(e => e.id === entryId);
       if (!originalEntry) continue;
       const newId = Math.random().toString(36).slice(2) + Date.now().toString(36);
       const newSchedId = Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -1053,22 +1169,22 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       newSelectedKeys.push(`${newId}:${newSchedId}`);
     }
     if (newEntries.length === 0) return;
-    store.addInstances(newEntries);
+    storeRef.current.addInstances(newEntries);
     setSelectedBlockKeys(new Set(newSelectedKeys));
     messageApi.success(`Pasted ${newEntries.length} block(s)`);
-  }, [clipboardBlocks, store, messageApi]);
+  }, [clipboardBlocks, messageApi]);
 
   const handleUnlinkBlock = useCallback(async (blockKey: string) => {
-    const linkRow = store.dynamicData.find(
+    const linkRow = storeRef.current.dynamicData.find(
       (d) => d.dataType === 'link' && d.value === blockKey
     );
     if (linkRow) {
-      await store.deleteDynamicData(linkRow.id);
+      await storeRef.current.deleteDynamicData(linkRow.id);
       message.success("Schedule slot detached from link.");
       setLinkingFirstBlockKey(null);
       setLinkingHighlightedKeys(null);
     }
-  }, [store]);
+  }, []);
 
   const handleToggleLinkingMode = useCallback(() => {
     setLinkingModeActive((prev) => {
@@ -1612,7 +1728,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [importExcelFileBytes, store, messageApi, notificationApi]);
 
   const handleDropEntry = useCallback((entryId: string, day: DayOfWeek, startMin: number, room: string) => {
-    const entry = store.blueprints.find((e) => e.id === entryId);
+    const entry = storeRef.current.blueprints.find((e) => e.id === entryId);
     if (!entry) return;
     const startStr = toTime(startMin);
     const endStr = toTime(startMin + 60);
@@ -1626,13 +1742,13 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
     const newId = Math.random().toString(36).slice(2) + Date.now().toString(36);
 
-    store.addInstance({
+    storeRef.current.addInstance({
       ...entry,
       id: newId,
       schedules: [newSched],
       room,
     });
-  }, [store]);
+  }, []);
 
   const handleDragStartCustom = useCallback((entryId: string, clientX: number, clientY: number) => {
     const entry = store.blueprints.find((e) => e.id === entryId);
@@ -1738,8 +1854,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }, [store.blueprints, viewStart, handleDropEntry, messageApi]);
 
   const handleDeleteSchedule = useCallback((entryId: string, _scheduleId: string) => {
-    store.deleteInstance(entryId);
-  }, [store]);
+    storeRef.current.deleteInstance(entryId);
+  }, []);
 
   const handleMoveRoom = useCallback((blockKey: string) => {
     setMoveRoomBlockKey(blockKey);
@@ -1747,6 +1863,85 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     setMoveTargetRoom(null);
     setMoveRoomOpen(true);
   }, []);
+
+  const handleMoveToAvailableRoom = useCallback((blockKeys: string[]) => {
+    const systemRooms = storeRef.current.dynamicData.filter(d => d.dataType === 'room');
+    const isMulti = blockKeys.length > 1;
+    const results: string[] = [];
+
+    for (const blockKey of blockKeys) {
+      const [entryId, scheduleId] = blockKey.split(':');
+      const entry = storeRef.current.instances.find(e => e.id === entryId);
+      if (!entry) { results.push(`${blockKey}: entry not found`); continue; }
+      const schedule = entry.schedules.find(s => s.id === scheduleId);
+      if (!schedule) { results.push(`${blockKey}: schedule not found`); continue; }
+
+      const currentRooms = (schedule.rooms || []).map(r => r.trim().toLowerCase());
+      const candidates: Array<{ room: string; conflictCount: number }> = [];
+
+      for (const room of systemRooms) {
+        const roomKey = room.displayAs;
+        if (currentRooms.includes(roomKey.trim().toLowerCase())) continue;
+        const tempSched: Schedule = { ...schedule, rooms: [roomKey] };
+        const tempEntry: SubjectEntry = { ...entry, schedules: [tempSched], room: roomKey };
+        const conflicts = storeRef.current.detectConflicts(tempEntry);
+        const roomConflictCount = conflicts.filter(c => c.type === 'room').length;
+        candidates.push({ room: roomKey, conflictCount: roomConflictCount });
+      }
+
+      if (candidates.length === 0) {
+        results.push(`${entry.offerCode}: no available rooms`);
+        continue;
+      }
+
+      candidates.sort((a, b) => a.conflictCount - b.conflictCount);
+
+      if (isMulti) {
+        const best = candidates[0];
+        const updatedSchedule = { ...schedule, rooms: [best.room] };
+        const updatedSchedules = entry.schedules.map(s => s.id === scheduleId ? updatedSchedule : s);
+        const updatedEntry = { ...entry, schedules: updatedSchedules, room: best.room };
+        storeRef.current.updateInstance(updatedEntry, scheduleId);
+        const label = best.room.split('|')[0] || best.room;
+        results.push(`${entry.offerCode} → ${label}${best.conflictCount > 0 ? ` (${best.conflictCount} conflict${best.conflictCount > 1 ? 's' : ''})` : ''}`);
+      } else {
+        setAvailRoomBlockKey(blockKey);
+        setAvailRoomsList(candidates.map(c => ({ room: c.room, conflictCount: c.conflictCount })));
+        setSelectedAvailRoom(candidates[0].room);
+        const currentRoomVal = schedule.rooms?.[0];
+        const currentLabel = currentRoomVal
+          ? (() => { const p = currentRoomVal.split('|'); return `${p[1] || 'Unknown'} — ${p[0] || currentRoomVal}`; })()
+          : '';
+        setAvailCurrentRoomLabel(currentLabel);
+        setAvailRoomModalOpen(true);
+        return;
+      }
+    }
+
+    if (isMulti) {
+      const moved = results.filter(r => r.includes('→'));
+      const failed = results.filter(r => !r.includes('→'));
+      let msg = `Moved ${moved.length} block${moved.length > 1 ? 's' : ''}`;
+      if (failed.length > 0) msg += `. ${failed.length} had no available room.`;
+      messageApi.success(msg);
+    }
+  }, [messageApi]);
+
+  const handleConfirmAvailRoom = useCallback(() => {
+    if (!availRoomBlockKey || !selectedAvailRoom) return;
+    const [entryId, scheduleId] = availRoomBlockKey.split(':');
+    const entry = storeRef.current.instances.find(e => e.id === entryId);
+    if (!entry || !scheduleId) { setAvailRoomModalOpen(false); return; }
+    const schedule = entry.schedules.find(s => s.id === scheduleId);
+    if (!schedule) { setAvailRoomModalOpen(false); return; }
+    const updatedSchedule = { ...schedule, rooms: [selectedAvailRoom] };
+    const updatedSchedules = entry.schedules.map(s => s.id === scheduleId ? updatedSchedule : s);
+    const updatedEntry = { ...entry, schedules: updatedSchedules, room: selectedAvailRoom };
+    storeRef.current.updateInstance(updatedEntry, scheduleId);
+    setAvailRoomModalOpen(false);
+    setAvailRoomBlockKey(null);
+    messageApi.success('Schedule moved to available room');
+  }, [availRoomBlockKey, selectedAvailRoom, messageApi]);
 
   const runUndoRedo = useCallback(async (action: 'Undo' | 'Redo', fn: () => void) => {
     setUndoRedoAction(action);
@@ -2004,7 +2199,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   }
 
   return (
-    <ConfigProvider theme={getThemeConfig(store.theme)}>
+    <ConfigProvider theme={getThemeConfig('blue')}>
       <Layout style={{ height: '100%', background: '#F5F7FA', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {contextHolder}
         {notificationContextHolder}
@@ -2094,7 +2289,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
               padding: '12px 12px 0',
             }}
           >
-            <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            <div ref={gridWrapperRef} style={{ flex: 1, overflowY: 'auto', minHeight: 0, willChange: 'opacity' }}>
               <TimetableGrid
                 entries={gridEntries}
                 hiddenDays={store.hiddenDays}
@@ -2114,6 +2309,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                 linkingModeActive={linkingModeActive}
                 onUnlinkBlock={handleUnlinkBlock}
                 onMoveRoom={handleMoveRoom}
+                onMoveToAvailableRoom={handleMoveToAvailableRoom}
+                theme={store.theme}
                 selectedBlockKeys={selectedBlockKeys}
                 onToggleSelectBlock={handleToggleSelectBlock}
                 onClearSelection={handleClearSelection}
@@ -2162,14 +2359,16 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           onToggleLinkingMode={handleToggleLinkingMode}
           roomOptions={roomOptions}
           activeRoom={activeRoom}
-          onActiveRoomChange={setActiveRoom}
+          onActiveRoomChange={handleActiveRoomChange}
           linkingFirstBlockKey={linkingFirstBlockKey}
           allConflictsList={allConflictsList}
           onHighlightSchedule={handleHighlightSchedule}
           isDirty={store.isDirty}
           statusMessage={statusMessage}
-          theme={store.theme}
+
           importNotifications={importNotifications}
+          roomConflictSummary={roomConflictSummary}
+          onRefreshRoomConflicts={handleRefreshRoomConflicts}
         />
 
         {/* ── Suggestions Modal ────────────────────────────────────── */}
@@ -2390,61 +2589,159 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         title="Export Room Timetable to Excel"
         open={exportRoomModalOpen}
         onOk={async () => {
-          if (!exportRoomRoom) return;
           setExportRoomModalOpen(false);
-          const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}_${exportRoomRoom.replace(/[|]/g, '_')}.xlsx` });
-          const selectedPath = await save({
-            title: 'Export Room Timetable',
-            defaultPath: resolvedPath,
-            filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
-          });
-          if (!selectedPath) return;
-          const entriesToExport = filterEntriesForExport(
-            store.instances, store.hiddenDays, true, viewStart, viewEnd, true,
-          ).filter((e) =>
-            e.schedules.some((s) => {
-              const roomVal = s.rooms.length > 0 ? s.rooms[0] : '';
-              return roomVal === exportRoomRoom;
-            })
-          );
-          try {
-            await exportToXlsx(
-              entriesToExport, `${timetableName}_${exportRoomRoom.replace(/[|]/g, '_')}.xlsx`,
-              store.hiddenDays, true, viewStart, viewEnd, true,
-              selectedPath,
+
+          if (!exportBatchMode) {
+            if (!exportRoomRoom) return;
+            const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}_${exportRoomRoom.replace(/[|]/g, '_')}.xlsx` });
+            const selectedPath = await save({
+              title: 'Export Room Timetable',
+              defaultPath: resolvedPath,
+              filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
+            });
+            if (!selectedPath) return;
+            const entriesToExport = filterEntriesForExport(
+              store.instances, store.hiddenDays, true, viewStart, viewEnd, true,
+            ).filter((e) =>
+              e.schedules.some((s) => {
+                const roomVal = s.rooms.length > 0 ? s.rooms[0] : '';
+                return roomVal === exportRoomRoom;
+              })
             );
-            messageApi.success(`Exported room timetable to ${selectedPath.split(/[\\/]/).pop()}`);
-          } catch (e: unknown) {
-            messageApi.error(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+            try {
+              await exportToXlsx(
+                entriesToExport, `${timetableName}_${exportRoomRoom.replace(/[|]/g, '_')}.xlsx`,
+                store.hiddenDays, true, viewStart, viewEnd, true,
+                selectedPath, store.theme, store.bandedRows,
+              );
+              messageApi.success(`Exported room timetable to ${selectedPath.split(/[\\/]/).pop()}`);
+            } catch (e: unknown) {
+              messageApi.error(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
+          } else {
+            if (exportBatchRooms.length === 0) return;
+            const entriesByRoom: Record<string, SubjectEntry[]> = {};
+            for (const roomVal of exportBatchRooms) {
+              entriesByRoom[roomVal] = filterEntriesForExport(
+                store.instances, store.hiddenDays, true, viewStart, viewEnd, true,
+              ).filter((e) =>
+                e.schedules.some((s) => {
+                  const entryRoomVal = s.rooms.length > 0 ? s.rooms[0] : '';
+                  return entryRoomVal === roomVal;
+                })
+              );
+            }
+            const resolvedPath = await invoke<string>('resolve_default_path', { filename: `${timetableName}_batch.xlsx` });
+            const selectedPath = await save({
+              title: 'Export Batch Room Timetable',
+              defaultPath: resolvedPath,
+              filters: [{ name: 'Excel Files', extensions: ['xlsx'] }],
+            });
+            if (!selectedPath) return;
+            try {
+              await exportToXlsxBatch(
+                entriesByRoom, `${timetableName}_batch.xlsx`,
+                store.hiddenDays, true, viewStart, viewEnd, true,
+                selectedPath, store.theme, store.bandedRows,
+              );
+              messageApi.success(`Exported batch room timetable to ${selectedPath.split(/[\\/]/).pop()}`);
+            } catch (e: unknown) {
+              messageApi.error(`Batch export failed: ${e instanceof Error ? e.message : String(e)}`);
+            }
           }
         }}
         onCancel={() => setExportRoomModalOpen(false)}
         okText="Export"
-        okButtonProps={{ disabled: !exportRoomRoom }}
+        okButtonProps={{ disabled: exportBatchMode ? exportBatchRooms.length === 0 : !exportRoomRoom }}
       >
         <Space direction="vertical" style={{ width: '100%' }} size={12}>
-          <div>
-            <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Building</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="Select building"
-              value={exportRoomBuilding}
-              onChange={(val) => { setExportRoomBuilding(val); setExportRoomRoom(null); }}
-              options={buildingOptions}
-              allowClear
-            />
-          </div>
-          <div>
-            <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Room</div>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="Select room"
-              value={exportRoomRoom}
-              onChange={(val) => setExportRoomRoom(val)}
-              options={filteredExportRoomOptions}
-              allowClear
-            />
-          </div>
+          <Checkbox
+            checked={exportBatchMode}
+            onChange={(e) => {
+              setExportBatchMode(e.target.checked);
+              if (!e.target.checked) {
+                setExportBatchBuildings([]);
+                setExportBatchRooms([]);
+              }
+            }}
+          >
+            Batch Export (one sheet per room)
+          </Checkbox>
+
+          {!exportBatchMode ? (
+            <>
+              <div>
+                <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Building</div>
+                <Select
+                  style={{ width: '100%' }}
+                  placeholder="Select building"
+                  value={exportRoomBuilding}
+                  onChange={(val) => { setExportRoomBuilding(val); setExportRoomRoom(null); }}
+                  options={buildingOptions}
+                  allowClear
+                />
+              </div>
+              <div>
+                <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Room</div>
+                <Select
+                  style={{ width: '100%' }}
+                  placeholder="Select room"
+                  value={exportRoomRoom}
+                  onChange={(val) => setExportRoomRoom(val)}
+                  options={exportRoomLabelOptions}
+                  allowClear
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Buildings</div>
+                <Select
+                  mode="multiple"
+                  style={{ width: '100%' }}
+                  placeholder="Select buildings (or leave empty for all)"
+                  value={exportBatchBuildings}
+                  onChange={(val) => { setExportBatchBuildings(val); setExportBatchRooms([]); }}
+                  options={buildingOptions}
+                  allowClear
+                />
+              </div>
+              <div>
+                <div style={{ marginBottom: 4, fontSize: 12, color: '#666' }}>Rooms</div>
+                <div style={{ maxHeight: 200, overflowY: 'auto', border: '1px solid #D0D7E3', borderRadius: 4, padding: '4px 8px' }}>
+                  <Checkbox
+                    checked={exportBatchRooms.length > 0 && exportBatchRooms.length === filteredBatchRoomOptions.length}
+                    indeterminate={exportBatchRooms.length > 0 && exportBatchRooms.length < filteredBatchRoomOptions.length}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setExportBatchRooms(filteredBatchRoomOptions.map(r => r.value));
+                      } else {
+                        setExportBatchRooms([]);
+                      }
+                    }}
+                    style={{ marginBottom: 4 }}
+                  >
+                    Select All
+                  </Checkbox>
+                  <Checkbox.Group
+                    value={exportBatchRooms}
+                    onChange={(vals) => setExportBatchRooms(vals as string[])}
+                    style={{ display: 'flex', flexDirection: 'column', gap: 2 }}
+                  >
+                    {filteredBatchRoomOptions.map(r => {
+                      const parts = r.value.split('|');
+                      return (
+                        <Checkbox key={r.value} value={r.value}>
+                          {parts[0]} <span style={{ fontSize: 11, color: '#7A8BA8' }}>({parts[1] || 'External'})</span>
+                        </Checkbox>
+                      );
+                    })}
+                  </Checkbox.Group>
+                </div>
+              </div>
+            </>
+          )}
         </Space>
       </Modal>
 
@@ -2603,6 +2900,104 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             {undoRedoAction} ongoing...
           </Typography.Title>
           <Progress percent={Math.round(undoRedoProgress)} size="small" status="active" />
+        </div>
+      </Modal>
+
+      {/* Save Loading Modal */}
+      <Modal
+        open={saveLoading}
+        closable={false}
+        footer={null}
+        maskClosable={false}
+        destroyOnClose
+        centered
+        width={300}
+      >
+        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+          <Spin size="large" />
+          <div style={{ marginTop: 16, color: '#595959', fontSize: 14 }}>Saving timetable...</div>
+        </div>
+      </Modal>
+
+      {/* Available Room Selection Modal */}
+      <Modal
+        title="Select Available Room"
+        open={availRoomModalOpen}
+        onOk={handleConfirmAvailRoom}
+        onCancel={() => { setAvailRoomModalOpen(false); setAvailRoomBlockKey(null); }}
+        okText="Move"
+        okButtonProps={{ disabled: !selectedAvailRoom }}
+        width={520}
+        centered
+        styles={{ body: { padding: '16px 20px', maxHeight: '55vh', overflowY: 'auto' } }}
+      >
+        {availCurrentRoomLabel && (
+          <div style={{ padding: '8px 12px', marginBottom: 10, background: '#f5f5f5', borderRadius: 4, fontSize: 12, color: '#8c8c8c' }}>
+            Current: {availCurrentRoomLabel}
+          </div>
+        )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {availRoomsList.map((item) => {
+            const parts = item.room.split('|');
+            const roomName = parts[0] || item.room;
+            const building = parts[1] || 'Unknown';
+            const isSelected = selectedAvailRoom === item.room;
+            return (
+              <div
+                key={item.room}
+                onClick={() => setSelectedAvailRoom(item.room)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  background: isSelected ? '#E8F0FE' : 'transparent',
+                  border: isSelected ? '1px solid #2B4C7E' : '1px solid transparent',
+                  transition: 'all 0.15s ease',
+                }}
+                onMouseEnter={(e) => { if (!isSelected) e.currentTarget.style.background = '#f5f5f5'; }}
+                onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <div
+                  style={{
+                    width: 16,
+                    height: 16,
+                    borderRadius: '50%',
+                    border: isSelected ? '5px solid #2B4C7E' : '2px solid #bfbfbf',
+                    flexShrink: 0,
+                    transition: 'border 0.15s ease',
+                  }}
+                />
+                <div style={{ flex: 1, fontSize: 13, lineHeight: 1.4 }}>
+                  <span style={{ color: '#8c8c8c' }}>{building}</span>
+                  {' — '}
+                  <span style={{ fontWeight: 600, color: '#1a1a1a' }}>{roomName}</span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    whiteSpace: 'nowrap',
+                    background: item.conflictCount > 0 ? '#FFF1F0' : '#F6FFED',
+                    color: item.conflictCount > 0 ? '#ff4d4f' : '#52c41a',
+                  }}
+                >
+                  {item.conflictCount > 0
+                    ? `${item.conflictCount} conflict${item.conflictCount > 1 ? 's' : ''}`
+                    : 'Clean'}
+                </div>
+              </div>
+            );
+          })}
+          {availRoomsList.length === 0 && (
+            <div style={{ textAlign: 'center', padding: 20, color: '#8c8c8c', fontSize: 13 }}>
+              No available rooms for this schedule slot.
+            </div>
+          )}
         </div>
       </Modal>
 

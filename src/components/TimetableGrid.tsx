@@ -1,10 +1,10 @@
-import { useMemo, useState, useEffect, memo, useRef } from 'react';
+import { useMemo, useState, useEffect, memo, useRef, useLayoutEffect } from 'react';
 import { Typography, Tooltip, Popover, Dropdown } from 'antd';
-import { DeleteOutlined, AimOutlined, DisconnectOutlined, SwapOutlined, CopyOutlined } from '@ant-design/icons';
+import { DeleteOutlined, AimOutlined, DisconnectOutlined, SwapOutlined, CopyOutlined, HomeOutlined } from '@ant-design/icons';
 import gsap from 'gsap';
 import type { SubjectEntry, DayOfWeek, Schedule } from '../types';
 import { DAY_ORDER } from '../types';
-import { colorForSubject } from '../theme';
+import { colorForSubject, getThemeColors } from '../theme';
 import { formatTeacherForDisplay, parseTeacherName } from '../utils/teacherName';
 import { minutesTo12Hr, formatTimeTo12Hr } from '../utils/time';
 
@@ -29,6 +29,8 @@ interface TimetableGridProps {
   linkingModeActive?: boolean;
   onUnlinkBlock?: (blockKey: string) => void;
   onMoveRoom?: (blockKey: string) => void;
+  onMoveToAvailableRoom?: (blockKeys: string[]) => void;
+  theme?: string;
   selectedBlockKeys: Set<string>;
   onToggleSelectBlock: (blockKey: string) => void;
   onClearSelection: () => void;
@@ -84,6 +86,8 @@ export const TimetableGrid = memo(function TimetableGrid({
   linkingModeActive,
   onUnlinkBlock,
   onMoveRoom,
+  onMoveToAvailableRoom,
+  theme = 'blue',
   selectedBlockKeys,
   onToggleSelectBlock,
   onClearSelection,
@@ -111,6 +115,20 @@ export const TimetableGrid = memo(function TimetableGrid({
 
   const onClearSelectionRef = useRef(onClearSelection);
   onClearSelectionRef.current = onClearSelection;
+
+  const scrollPosRef = useRef({ left: 0, top: 0 });
+  const prevActiveRoomRef = useRef(activeRoom);
+
+  useEffect(() => {
+    prevActiveRoomRef.current = activeRoom;
+  }, [activeRoom]);
+
+  useLayoutEffect(() => {
+    if (gridContainerRef.current) {
+      gridContainerRef.current.scrollLeft = scrollPosRef.current.left;
+      gridContainerRef.current.scrollTop = scrollPosRef.current.top;
+    }
+  });
 
   useEffect(() => {
     const handleHistoryFocus = (e: Event) => {
@@ -228,6 +246,9 @@ export const TimetableGrid = memo(function TimetableGrid({
     startY: number;
   } | null>(null);
 
+  // Pending drag data — promoted to dragRef after a 4px movement threshold
+  const pendingDragRef = useRef<typeof dragRef.current>(null);
+
   const gridContainerRef = useRef<HTMLDivElement | null>(null);
 
   // Ghost elements for drop preview during drag
@@ -263,7 +284,20 @@ export const TimetableGrid = memo(function TimetableGrid({
 
   // Global mousemove/mouseup for drag + marquee
   useEffect(() => {
+    const DRAG_THRESHOLD = 4;
+
     const handleMouseMove = (e: MouseEvent) => {
+      // Promote pending drag to active drag after threshold
+      const pending = pendingDragRef.current;
+      if (pending && !dragRef.current) {
+        const dx = e.pageX - pending.startX;
+        const dy = e.pageY - pending.startY;
+        if (Math.abs(dx) >= DRAG_THRESHOLD || Math.abs(dy) >= DRAG_THRESHOLD) {
+          dragRef.current = pending;
+          pendingDragRef.current = null;
+        }
+      }
+
       // Handle drag
       const d = dragRef.current;
       if (d) {
@@ -338,6 +372,9 @@ export const TimetableGrid = memo(function TimetableGrid({
     };
 
     const handleMouseUp = (e: MouseEvent) => {
+      // Clear pending drag if it never promoted (was just a click)
+      pendingDragRef.current = null;
+
       // Handle drag end
       const d = dragRef.current;
       if (d) {
@@ -350,7 +387,7 @@ export const TimetableGrid = memo(function TimetableGrid({
         // Reset block visibility
         for (let i = 0; i < d.entryIds.length; i++) {
           const el = document.getElementById(`grid-block-${d.entryIds[i]}-${d.scheduleIds[i]}`);
-          if (el) gsap.set(el, { opacity: 1 });
+          if (el) gsap.set(el, { opacity: 1, x: 0, y: 0 });
         }
 
         const deltaX = e.pageX - d.startX;
@@ -358,58 +395,61 @@ export const TimetableGrid = memo(function TimetableGrid({
         const dayShift = Math.round(deltaX / COL_WIDTH);
         const slotShift = Math.round(deltaY / ROW_HEIGHT);
 
-        const updated = new Map<string, SubjectEntry>();
-        const entries = entriesRef.current;
-        const onUpdate = onUpdateEntryRef.current;
-        const vs = viewStartRef.current;
-        const ve = viewEndRef.current;
+        // Skip state commits for no-op drags (block didn't actually move)
+        if (dayShift === 0 && slotShift === 0) {
+          // Nothing to do — block snaps back visually via the gsap reset above
+        } else {
+          const updated = new Map<string, SubjectEntry>();
+          const entries = entriesRef.current;
+          const onUpdate = onUpdateEntryRef.current;
+          const vs = viewStartRef.current;
+          const ve = viewEndRef.current;
 
-        for (let i = 0; i < d.entryIds.length; i++) {
-          const eId = d.entryIds[i];
-          const sId = d.scheduleIds[i];
-          const origDay = d.initialDays[i];
-          const origStartMin = d.initialStartMins[i];
-          const duration = d.durations[i];
+          for (let i = 0; i < d.entryIds.length; i++) {
+            const eId = d.entryIds[i];
+            const sId = d.scheduleIds[i];
+            const origDay = d.initialDays[i];
+            const origStartMin = d.initialStartMins[i];
+            const duration = d.durations[i];
 
-          const origDayIdx = DAY_ORDER.indexOf(origDay);
-          let newDayIdx = origDayIdx + dayShift;
-          newDayIdx = Math.max(0, Math.min(DAY_ORDER.length - 1, newDayIdx));
-          const newDay = DAY_ORDER[newDayIdx];
+            const origDayIdx = DAY_ORDER.indexOf(origDay);
+            let newDayIdx = origDayIdx + dayShift;
+            newDayIdx = Math.max(0, Math.min(DAY_ORDER.length - 1, newDayIdx));
+            const newDay = DAY_ORDER[newDayIdx];
 
-          let newStartMin = origStartMin + slotShift * SLOT_INTERVAL;
-          newStartMin = Math.max(vs, Math.min(ve - duration, newStartMin));
+            let newStartMin = origStartMin + slotShift * SLOT_INTERVAL;
+            newStartMin = Math.max(vs, Math.min(ve - duration, newStartMin));
 
-          const entry = entries.find(en => en.id === eId);
-          if (!entry) continue;
+            const entry = entries.find(en => en.id === eId);
+            if (!entry) continue;
 
-          const existing = updated.get(eId);
-          const baseEntry = existing || entry;
+            const existing = updated.get(eId);
+            const baseEntry = existing || entry;
 
-          const updatedSchedules = baseEntry.schedules.map((s) => {
-            if (s.id === sId) {
-              const daysCopy = s.days.map((day) => (day === origDay ? newDay : day));
-              const uniqueDays = Array.from(new Set(daysCopy));
-              return {
-                ...s,
-                days: uniqueDays,
-                startTime: minutesTo24Hr(newStartMin),
-                endTime: minutesTo24Hr(newStartMin + duration),
-              };
-            }
-            return s;
-          });
+            const updatedSchedules = baseEntry.schedules.map((s) => {
+              if (s.id === sId) {
+                const daysCopy = s.days.map((day) => (day === origDay ? newDay : day));
+                const uniqueDays = Array.from(new Set(daysCopy));
+                return {
+                  ...s,
+                  days: uniqueDays,
+                  startTime: minutesTo24Hr(newStartMin),
+                  endTime: minutesTo24Hr(newStartMin + duration),
+                };
+              }
+              return s;
+            });
 
-          updated.set(eId, {
-            ...baseEntry,
-            schedules: updatedSchedules,
-          });
+            updated.set(eId, {
+              ...baseEntry,
+              schedules: updatedSchedules,
+            });
+          }
 
-          const el = document.getElementById(`grid-block-${eId}-${sId}`);
-          if (el) gsap.set(el, { x: 0, y: 0 });
-        }
-
-        for (const [, ue] of updated) {
-          onUpdate?.(ue);
+          // Batch: single onUpdate call per unique entry
+          for (const [, ue] of updated) {
+            onUpdate?.(ue);
+          }
         }
       }
 
@@ -520,16 +560,26 @@ export const TimetableGrid = memo(function TimetableGrid({
   const gridHeight = rowCount * ROW_HEIGHT;
   const totalDays = DAY_ORDER.length;
 
+  const dayEntriesMap = useMemo(() => {
+    const map = new Map<string, SlotEntry[]>();
+    for (const day of DAY_ORDER) {
+      map.set(day, slotEntries.filter((se) =>
+        se.day === day && se.startMin < viewEnd && se.endMin > viewStart
+      ));
+    }
+    return map;
+  }, [slotEntries, viewStart, viewEnd]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div ref={gridContainerRef} style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 250px)', border: '1px solid #D0D7E3', borderRadius: 4, position: 'relative' }}>
+      <div ref={gridContainerRef} onScroll={() => { const el = gridContainerRef.current; if (el) { scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop }; } }} style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 250px)', border: '1px solid #D0D7E3', borderRadius: 4, position: 'relative' }}>
         <div
           onClick={onCancelEdit}
           style={{ display: 'flex', minWidth: TIME_COL_WIDTH + totalDays * COL_WIDTH, position: 'relative' }}
         >
             <div style={{ width: TIME_COL_WIDTH, flexShrink: 0, position: 'sticky', left: 0, zIndex: 3, background: '#F5F7FA' }}>
-              <div style={headerCellStyle(TIME_COL_WIDTH, true)}>&nbsp;</div>
-              <div style={{ position: 'relative', height: gridHeight + 20 }}>
+              <div style={headerCellStyle(TIME_COL_WIDTH, true, theme)}>&nbsp;</div>
+              <div style={{ position: 'relative', height: gridHeight + 4 }}>
                 {Array.from({ length: rowCount }, (_, i) => (
                   <div
                     key={i}
@@ -557,31 +607,26 @@ export const TimetableGrid = memo(function TimetableGrid({
                     position: 'absolute',
                     top: rowCount * ROW_HEIGHT,
                     width: '100%',
-                    height: 20,
+                    height: 4,
                     display: 'flex',
-                    alignItems: 'flex-start',
-                    justifyContent: 'flex-end',
-                    paddingRight: 6,
-                    paddingTop: 2,
                     borderTop: '1px solid #D0D7E3',
                     boxSizing: 'border-box',
                   }}
-                >
-                  <Text style={{ fontSize: 10, color: '#7A8BA8', lineHeight: 1, fontWeight: 700 }}>
-                    {toTime(viewEnd)}
-                  </Text>
-                </div>
+                />
               </div>
             </div>
 
             {DAY_ORDER.map((day) => {
-              const dayEntries = slotEntries.filter((se) => {
+              const dayEntries = (() => {
                 const drag = dragRef.current;
-                if (!drag) return se.day === day && se.startMin < viewEnd && se.endMin > viewStart;
-                const idx = drag.blockIds.indexOf(`${se.entry.id}:${se.schedule.id}`);
-                if (idx === -1) return se.day === day && se.startMin < viewEnd && se.endMin > viewStart;
-                return drag.initialDays[idx] === day;
-              });
+                if (!drag) return dayEntriesMap.get(day) || [];
+                const filtered = slotEntries.filter((se) => {
+                  const idx = drag.blockIds.indexOf(`${se.entry.id}:${se.schedule.id}`);
+                  if (idx === -1) return se.day === day && se.startMin < viewEnd && se.endMin > viewStart;
+                  return drag.initialDays[idx] === day;
+                });
+                return filtered;
+              })();
               const isHidden = hiddenDays.includes(day);
 
               return (
@@ -595,7 +640,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                     transition: 'opacity 0.2s ease',
                   }}
                 >
-                  <div style={headerCellStyle(COL_WIDTH, false)}>
+                  <div style={headerCellStyle(COL_WIDTH, false, theme)}>
                     <Text strong style={{ fontSize: 12, color: '#ffffff' }}>
                       {day}
                     </Text>
@@ -629,7 +674,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                       const startMin = viewStart + slotIndex * SLOT_INTERVAL;
                       onDropEntry?.(entryId, day, startMin, activeRoom);
                     }}
-                    style={{ position: 'relative', height: gridHeight + 20, transition: 'background-color 0.2s ease' }}
+                    style={{ position: 'relative', height: gridHeight + 4, transition: 'background-color 0.2s ease' }}
                   >
                     <div
                       onMouseDown={(e) => {
@@ -666,7 +711,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                         top: rowCount * ROW_HEIGHT,
                         left: 0,
                         right: 0,
-                        height: 20,
+                        height: 4,
                         borderTop: '1px solid #D0D7E3',
                         pointerEvents: 'none',
                       }}
@@ -707,11 +752,13 @@ export const TimetableGrid = memo(function TimetableGrid({
                                 ...(selectedBlockKeys.size > 1
                                   ? [
                                       { label: `Move ${selectedBlockKeys.size} blocks to room`, key: 'move-multi', icon: <SwapOutlined /> },
+                                      { label: `Move ${selectedBlockKeys.size} blocks to available room`, key: 'move-avail-multi', icon: <HomeOutlined /> },
                                       { label: `Delete ${selectedBlockKeys.size} blocks`, key: 'delete-multi', icon: <DeleteOutlined />, danger: true },
                                       { type: 'divider' as const },
                                     ]
                                   : [
                                       { label: 'Move to room', key: 'move', icon: <SwapOutlined /> },
+                                      { label: 'Move to available room', key: 'move-avail', icon: <HomeOutlined /> },
                                     ]
                                 ),
                                 { label: 'Copy', key: 'copy', icon: <CopyOutlined /> },
@@ -733,6 +780,9 @@ export const TimetableGrid = memo(function TimetableGrid({
                                 if (key === 'move' || key === 'move-multi') {
                                   const keys = selectedBlockKeys.size > 0 ? Array.from(selectedBlockKeys) : [blockKey];
                                   keys.forEach(k => onMoveRoom?.(k));
+                                } else if (key === 'move-avail' || key === 'move-avail-multi') {
+                                  const keys = selectedBlockKeys.size > 0 ? Array.from(selectedBlockKeys) : [blockKey];
+                                  onMoveToAvailableRoom?.(keys);
                                 } else if (key === 'unlink') {
                                   onUnlinkBlock?.(blockKey);
                                 } else if (key === 'delete') {
@@ -771,7 +821,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                           >
                             <div
                               id={`grid-block-${se.entry.id}-${se.schedule.id}`}
-                              className={`timetable-entry-block ${isLinkingFirst ? 'linking-first-block' : ''}`}
+                              className={`timetable-entry-block timetable-fade-target ${isLinkingFirst ? 'linking-first-block' : ''}`}
                               tabIndex={0}
                               onClick={(e) => {
                                 e.stopPropagation();
@@ -828,7 +878,8 @@ export const TimetableGrid = memo(function TimetableGrid({
 
                               if (entryIds.length === 0) return;
 
-                              dragRef.current = {
+                              // Store as pending — promoted to active drag after 4px threshold
+                              pendingDragRef.current = {
                                 blockIds,
                                 initialDays,
                                 initialStartMins,
@@ -1055,6 +1106,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                           >
                             <div
                               key={`overlap-${oIdx}`}
+                              className="timetable-fade-target"
                               style={{
                                 position: 'absolute',
                                 top: topPx + 1, left: 2, right: 2,
@@ -1080,16 +1132,17 @@ export const TimetableGrid = memo(function TimetableGrid({
   );
 });
 
-function headerCellStyle(width: number, isTimeCol: boolean): React.CSSProperties {
+function headerCellStyle(width: number, isTimeCol: boolean, theme: string = 'blue'): React.CSSProperties {
+  const colors = getThemeColors(theme);
   return {
     width,
     height: 32,
-    background: isTimeCol ? '#F5F7FA' : '#1E3560',
+    background: isTimeCol ? '#F5F7FA' : colors.headerBg,
     display: 'flex',
     alignItems: 'center',
     justifyContent: isTimeCol ? 'flex-end' : 'center',
     paddingRight: isTimeCol ? 6 : 0,
-    borderBottom: '2px solid #2B4C7E',
+    borderBottom: `2px solid ${colors.primary}`,
     position: 'sticky',
     top: 0,
     zIndex: 2,
