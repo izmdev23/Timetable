@@ -21,6 +21,7 @@ import { BlueprintForm } from '../components/BlueprintForm';
 import { ColumnMappingForm } from '../components/ColumnMappingForm';
 import { detectBlueprintColumns, detectScheduleColumns } from '../utils/autoDetectColumns';
 import { parseInstructorValue, formatInstructorValue, formatInstructorDisplay } from '../utils/teacherName';
+import { resolveRoomForSchedule } from '../utils/conflictResolver';
 import { StatusBar } from '../components/StatusBar';
 import { useBlueprintSearch } from '../hooks/useBlueprintSearch';
 import { useCollection } from '../hooks/useCollectionContext';
@@ -1070,8 +1071,26 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     });
   }, []);
 
-  const handleExcelImport = useCallback(async (payload: { mapping: Record<string, string>; includeSchedule: boolean; timeFormat: 'auto' | '12h' | '24h'; scheduleMapping: Record<string, string>; autoCreateMissing?: boolean }) => {
-    const { mapping, includeSchedule, timeFormat, scheduleMapping, autoCreateMissing = false } = payload;
+  const handleExcelImport = useCallback(async (payload: {
+    mapping: Record<string, string>;
+    includeSchedule: boolean;
+    timeFormat: 'auto' | '12h' | '24h';
+    scheduleMapping: Record<string, string>;
+    autoCreateMissing?: boolean;
+    autoFixConflicts?: boolean;
+    allowAnyRoom?: boolean;
+    limitToBuilding?: boolean;
+  }) => {
+    const {
+      mapping,
+      includeSchedule,
+      timeFormat,
+      scheduleMapping,
+      autoCreateMissing = false,
+      autoFixConflicts = false,
+      allowAnyRoom = false,
+      limitToBuilding = false,
+    } = payload;
     setImportExcelLoading(true);
 
     const notifications: string[] = [];
@@ -1272,6 +1291,10 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         const DAYS: DayOfWeek[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
         const DAY_KEYS = ['monIn', 'monOut', 'tueIn', 'tueOut', 'wedIn', 'wedOut', 'thuIn', 'thuOut', 'friIn', 'friOut', 'satIn', 'satOut', 'sunIn', 'sunOut'];
 
+        const rawRoom = getVal(schedColMap, 'room');
+        const rowRooms = rawRoom.split(',').map((r) => r.trim()).filter(Boolean);
+        let roomIndex = 0;
+
         for (let d = 0; d < 7; d++) {
           const startRaw = getVal(schedColMap, DAY_KEYS[d * 2]);
           const endRaw = getVal(schedColMap, DAY_KEYS[d * 2 + 1]);
@@ -1297,10 +1320,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           const firstName = getVal(schedColMap, 'firstName');
           const middleName = getVal(schedColMap, 'middleName');
           const lastName = getVal(schedColMap, 'lastName');
-          const rawRoom = getVal(schedColMap, 'room');
-          // Pick the first room from CSV-formatted values like "RM1,RM2,RM4"
-          const roomVal = rawRoom.includes(',') ? rawRoom.split(',')[0].trim() : rawRoom;
-          const fullRoomVal = roomVal && blueprintBuilding ? `${roomVal}|${blueprintBuilding}` : roomVal;
 
           if ((firstName || middleName || lastName) && !instructorExists(dynamicData, firstName, middleName, lastName)) {
             const displayName = `${lastName}, ${firstName} ${middleName}`.trim();
@@ -1310,41 +1329,71 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             unknownInstructors.get(displayName)!.push({ firstName, middleName, lastName });
           }
 
-          if (roomVal) {
-            const targetBldg = blueprintBuilding || 'External';
-            if (!roomExists(dynamicData, roomVal, targetBldg)) {
-              const key = `${roomVal}|${targetBldg}`;
-              const existing = unknownRooms.get(key);
-              if (existing) {
-                existing.count++;
-              } else {
-                unknownRooms.set(key, { roomName: roomVal, buildingName: targetBldg, count: 1 });
-              }
-            }
-          }
-
           const instructorDisplayName = formatInstructorDisplay(firstName, middleName, lastName);
 
           const schedId = crypto.randomUUID();
           const instanceId = crypto.randomUUID();
-          const schedule: Schedule = {
+          const dummySched: Schedule = {
             id: schedId,
             days: [DAYS[d]],
             startTime,
             endTime,
-            rooms: fullRoomVal ? [fullRoomVal] : [],
+            rooms: [],
             assignedTeacherName: instructorDisplayName || undefined,
           };
-
-          const instance: SubjectEntry = {
+          const dummyInstance: SubjectEntry = {
             id: instanceId,
             subjectCode, offerCode, subjectDescription,
             assignedTeacherName: instructorDisplayName,
-            room: fullRoomVal || '',
+            room: '',
             program, year: yearNum || 0, section,
             department,
-            schedules: [schedule],
+            schedules: [dummySched],
             blueprintId: blueprintMap.get(bpKey)!.id,
+          };
+
+          const resolution = resolveRoomForSchedule({
+            schedule: dummySched,
+            candidateEntry: dummyInstance,
+            instancesToAdd,
+            storeInstances: store.instances,
+            dynamicData,
+            detectConflicts: store.detectConflicts,
+            rowRooms,
+            blueprintBuilding,
+            autoFixConflicts,
+            allowAnyRoom,
+            limitToBuilding,
+            roomIndex,
+          });
+
+          const finalRoomVal = resolution.roomVal;
+          roomIndex = resolution.nextRoomIndex;
+
+          if (finalRoomVal) {
+            const parts = finalRoomVal.split('|');
+            const rVal = parts[0];
+            const bVal = parts[1] || 'External';
+            if (!roomExists(dynamicData, rVal, bVal)) {
+              const key = `${rVal}|${bVal}`;
+              const existing = unknownRooms.get(key);
+              if (existing) {
+                existing.count++;
+              } else {
+                unknownRooms.set(key, { roomName: rVal, buildingName: bVal, count: 1 });
+              }
+            }
+          }
+
+          const schedule: Schedule = {
+            ...dummySched,
+            rooms: finalRoomVal ? [finalRoomVal] : [],
+          };
+
+          const instance: SubjectEntry = {
+            ...dummyInstance,
+            room: finalRoomVal || '',
+            schedules: [schedule],
           };
           instancesToAdd.push(instance);
         }

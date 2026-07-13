@@ -48,6 +48,9 @@ export interface ImportPayload {
   timeFormat: 'auto' | '12h' | '24h';
   scheduleMapping: Record<string, string>;
   autoCreateMissing: boolean;
+  autoFixConflicts: boolean;
+  allowAnyRoom: boolean;
+  limitToBuilding: boolean;
 }
 
 interface ColumnMappingFormProps {
@@ -120,6 +123,9 @@ export function ColumnMappingForm({
   const [searching, setSearching] = useState(false);
   const [autoCreateMissing, setAutoCreateMissing] = useState(true);
   const [predefinedNamesOpen, setPredefinedNamesOpen] = useState(false);
+  const [autoFixConflicts, setAutoFixConflicts] = useState(false);
+  const [allowAnyRoom, setAllowAnyRoom] = useState(false);
+  const [limitToBuilding, setLimitToBuilding] = useState(false);
 
   const setCol = (key: string, val: string) => {
     setMapping((prev) => ({ ...prev, [key]: val.toUpperCase().replace(/[^A-Z]/g, '').slice(0, 3) }));
@@ -145,7 +151,16 @@ export function ColumnMappingForm({
   };
 
   const handleImport = () => {
-    onImport({ mapping, includeSchedule, timeFormat, scheduleMapping, autoCreateMissing });
+    onImport({
+      mapping,
+      includeSchedule,
+      timeFormat,
+      scheduleMapping,
+      autoCreateMissing,
+      autoFixConflicts,
+      allowAnyRoom,
+      limitToBuilding,
+    });
   };
 
   const previewData = worksheetRows && mapping
@@ -255,6 +270,21 @@ export function ColumnMappingForm({
 
       {includeSchedule && (
         <>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8, padding: '0 8px' }}>
+            <Checkbox checked={autoFixConflicts} onChange={(e) => setAutoFixConflicts(e.target.checked)}>
+              Auto fix conflicting schedules
+            </Checkbox>
+            {autoFixConflicts && (
+              <div style={{ paddingLeft: 24, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <Checkbox checked={allowAnyRoom} onChange={(e) => setAllowAnyRoom(e.target.checked)}>
+                  Allow picking other rooms beyond specified
+                </Checkbox>
+                <Checkbox checked={limitToBuilding} onChange={(e) => setLimitToBuilding(e.target.checked)}>
+                  Limit to building
+                </Checkbox>
+              </div>
+            )}
+          </div>
 
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
