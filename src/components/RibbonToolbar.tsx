@@ -18,6 +18,19 @@ const { Text } = Typography;
 import { Tag } from 'antd';
 const AntdCheckableTag = Tag.CheckableTag;
 
+const getDisplayLabel = (item: DynamicData): string => {
+  if (item.dataType === 'room') {
+    return item.displayAs.split('|')[0] || item.value;
+  }
+  if (item.dataType === 'instructor') {
+    const parts = item.value.split(', ');
+    const lastName = parts[0] || '';
+    const firstName = parts[1] || '';
+    return `${lastName}, ${firstName}`.trim();
+  }
+  return item.displayAs || item.value;
+};
+
 interface RibbonToolbarProps {
   // File operations
   onSave: () => void;
@@ -112,6 +125,7 @@ export function RibbonToolbar({
   const [form] = Form.useForm();
   const [editingDynamicId, setEditingDynamicId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('department');
+  const [sortOrder, setSortOrder] = useState<'created' | 'name-asc' | 'name-desc'>('created');
 
   // Watch dataType to change form fields dynamically
   const formDataType = Form.useWatch('dataType', form) ?? 'department';
@@ -517,9 +531,22 @@ export function RibbonToolbar({
         <Divider style={{ margin: '12px 0' }} />
 
         <div>
-          <Typography.Title level={5} style={{ fontSize: 13, marginBottom: 8 }}>
-            Existing Data Entries
-          </Typography.Title>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <Typography.Title level={5} style={{ fontSize: 13, margin: 0 }}>
+              Existing Data Entries
+            </Typography.Title>
+            <Select
+              size="small"
+              value={sortOrder}
+              onChange={setSortOrder}
+              style={{ width: 130 }}
+              options={[
+                { label: 'Date Created', value: 'created' },
+                { label: 'Name (A-Z)', value: 'name-asc' },
+                { label: 'Name (Z-A)', value: 'name-desc' },
+              ]}
+            />
+          </div>
           <Tabs
             size="small"
             type="card"
@@ -531,7 +558,12 @@ export function RibbonToolbar({
               setEditingDynamicId(null);
             }}
             items={['department', 'program', 'year', 'section', 'building', 'room', 'instructor'].map((type) => {
-              const list = dynamicData.filter((d) => d.dataType === type);
+              let list = dynamicData.filter((d) => d.dataType === type);
+              if (sortOrder === 'name-asc') {
+                list = [...list].sort((a, b) => getDisplayLabel(a).localeCompare(getDisplayLabel(b)));
+              } else if (sortOrder === 'name-desc') {
+                list = [...list].sort((a, b) => getDisplayLabel(b).localeCompare(getDisplayLabel(a)));
+              }
               return {
                 label: type === 'instructor' ? 'Instructors' : (type.charAt(0).toUpperCase() + type.slice(1)),
                 key: type,

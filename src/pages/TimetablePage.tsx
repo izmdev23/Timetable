@@ -350,20 +350,25 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
   const roomOptions = useMemo(() => {
     const roomMap = new Map<string, { label: string; value: string }>();
-    const addedRoomNames = new Set<string>();
     for (const d of store.dynamicData.filter(d => d.dataType === 'room')) {
       const parts = d.displayAs.split('|');
       const roomName = d.value;
-      const building = parts[1] || '';
-      const value = building ? `${roomName}|${building}` : roomName;
-      const label = building ? `${building} - ${roomName}` : roomName;
-      roomMap.set(value, { label, value });
-      addedRoomNames.add(roomName.toLowerCase());
+      const building = parts[1] || 'External';
+      const key = `${roomName}|${building}`.toLowerCase();
+      const value = `${roomName}|${building}`;
+      const label = `${building} - ${roomName}`;
+      roomMap.set(key, { label, value });
     }
     for (const r of store.suggestions.rooms) {
-      if (!addedRoomNames.has(r.toLowerCase())) {
-        roomMap.set(r, { label: r, value: r });
-        addedRoomNames.add(r.toLowerCase());
+      if (!r) continue;
+      const parts = r.split('|');
+      const roomName = parts[0];
+      const building = parts[1] || 'External';
+      const key = `${roomName}|${building}`.toLowerCase();
+      if (!roomMap.has(key)) {
+        const value = `${roomName}|${building}`;
+        const label = `${building} - ${roomName}`;
+        roomMap.set(key, { label, value });
       }
     }
     return Array.from(roomMap.values()).sort((a, b) => a.label.localeCompare(b.label));
@@ -1080,7 +1085,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     const missingYears = new Set<string>();
     const missingDepartments = new Set<string>();
     const missingBuildings = new Set<string>();
-    const roomToBuildingMap = new Map<string, string>();
 
     function colLettersToIndex(letters: string): number {
       let index = 0;
@@ -1134,8 +1138,15 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       });
     }
 
-    function roomExists(dd: DynamicData[], room: string): boolean {
-      return dd.some((d) => d.dataType === 'room' && d.value.toLowerCase() === room.toLowerCase());
+    function roomExists(dd: DynamicData[], room: string, building: string): boolean {
+      const targetBldg = building || 'External';
+      return dd.some((d) => {
+        if (d.dataType !== 'room') return false;
+        const parts = d.displayAs.split('|');
+        const dRoom = d.value.toLowerCase();
+        const dBldg = (parts[1] || 'External').toLowerCase();
+        return dRoom === room.toLowerCase() && dBldg === targetBldg.toLowerCase();
+      });
     }
 
     try {
@@ -1147,7 +1158,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       const colMap = buildColMap(mapping);
       const schedColMap = includeSchedule ? buildColMap(scheduleMapping) : {};
 
-      const unknownRooms = new Map<string, number>();
+      const unknownRooms = new Map<string, { roomName: string; buildingName: string; count: number }>();
       const unknownInstructors = new Map<string, { firstName: string; middleName: string; lastName: string }[]>();
 
       worksheet.eachRow((row, rowNumber) => {
@@ -1192,11 +1203,15 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         }
 
         if (blueprintRoom) {
-          if (blueprintBuilding) {
-            roomToBuildingMap.set(blueprintRoom, blueprintBuilding);
-          }
-          if (!roomExists(dynamicData, blueprintRoom)) {
-            unknownRooms.set(blueprintRoom, (unknownRooms.get(blueprintRoom) || 0) + 1);
+          const targetBldg = blueprintBuilding || 'External';
+          if (!roomExists(dynamicData, blueprintRoom, targetBldg)) {
+            const key = `${blueprintRoom}|${targetBldg}`;
+            const existing = unknownRooms.get(key);
+            if (existing) {
+              existing.count++;
+            } else {
+              unknownRooms.set(key, { roomName: blueprintRoom, buildingName: targetBldg, count: 1 });
+            }
           }
         }
 
@@ -1296,11 +1311,15 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           }
 
           if (roomVal) {
-            if (blueprintBuilding) {
-              roomToBuildingMap.set(roomVal, blueprintBuilding);
-            }
-            if (!roomExists(dynamicData, roomVal)) {
-              unknownRooms.set(roomVal, (unknownRooms.get(roomVal) || 0) + 1);
+            const targetBldg = blueprintBuilding || 'External';
+            if (!roomExists(dynamicData, roomVal, targetBldg)) {
+              const key = `${roomVal}|${targetBldg}`;
+              const existing = unknownRooms.get(key);
+              if (existing) {
+                existing.count++;
+              } else {
+                unknownRooms.set(key, { roomName: roomVal, buildingName: targetBldg, count: 1 });
+              }
             }
           }
 
@@ -1354,11 +1373,10 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             notifications.push(`Created building "${bldgVal}"`);
           }
         }
-        for (const [roomName] of unknownRooms) {
-          const bldgVal = roomToBuildingMap.get(roomName) || '';
-          const displayAs = bldgVal ? `${roomName}|${bldgVal}` : roomName;
-          await store.addDynamicData('room', roomName, displayAs);
-          notifications.push(`Created room "${roomName}"${bldgVal ? ` in building "${bldgVal}"` : ''}`);
+        for (const [, info] of unknownRooms) {
+          const displayAs = `${info.roomName}|${info.buildingName}`;
+          await store.addDynamicData('room', info.roomName, displayAs);
+          notifications.push(`Created room "${info.roomName}" in building "${info.buildingName}"`);
         }
 
         if (includeSchedule) {
@@ -1411,8 +1429,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       }
 
       if (!autoCreateMissing) {
-        for (const [room, count] of unknownRooms) {
-          notifications.push(`${count} row(s) reference unknown room "${room}"`);
+        for (const [, info] of unknownRooms) {
+          notifications.push(`${info.count} row(s) reference unknown room "${info.roomName}" in building "${info.buildingName}"`);
         }
         for (const [displayName] of unknownInstructors) {
           notifications.push(`1 row(s) reference unknown instructor "${displayName}"`);
