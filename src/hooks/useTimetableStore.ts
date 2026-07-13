@@ -60,6 +60,7 @@ export interface TimetableStore {
   addInstances: (entries: SubjectEntry[]) => ConflictInfo[][];
   updateInstance: (entry: SubjectEntry, editedScheduleId?: string) => ConflictInfo[];
   deleteBlueprint: (id: string) => void;
+  deleteBlueprints: (ids: string[]) => void;
   deleteInstance: (id: string) => void;
   setHiddenDays: (days: DayOfWeek[]) => void;
   detectConflicts: (candidate: SubjectEntry, againstEntries?: SubjectEntry[]) => ConflictInfo[];
@@ -639,11 +640,54 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const deleteBlueprint = useCallback(
     (id: string): void => {
       const nextBlueprints = blueprints.filter((e) => e.id !== id);
+      const nextInstances = instances.filter((e) => e.blueprintId !== id);
       const nextEditingEntryId = editingEntryId === id ? null : editingEntryId;
       const nextFormState = editingEntryId === id ? DEFAULT_FORM_STATE : formState;
-      commitState(nextBlueprints, instances, nextEditingEntryId, nextFormState);
+
+      // Clean up links involving the deleted instances
+      const deletedInstanceIds = new Set(
+        instances.filter((e) => e.blueprintId === id).map((e) => e.id)
+      );
+      const linksToRemove = dynamicData.filter(
+        (d) => d.dataType === 'link' && (
+          deletedInstanceIds.has(d.value.split(':')[0]) || 
+          deletedInstanceIds.has(d.displayAs.split(':')[0])
+        )
+      );
+      for (const link of linksToRemove) {
+        void deleteDynamicData(link.id);
+      }
+
+      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState);
     },
-    [blueprints, instances, editingEntryId, formState, commitState],
+    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData],
+  );
+
+  const deleteBlueprints = useCallback(
+    (ids: string[]): void => {
+      const idsSet = new Set(ids);
+      const nextBlueprints = blueprints.filter((e) => !idsSet.has(e.id));
+      const nextInstances = instances.filter((e) => !e.blueprintId || !idsSet.has(e.blueprintId));
+      const nextEditingEntryId = idsSet.has(editingEntryId || '') ? null : editingEntryId;
+      const nextFormState = idsSet.has(editingEntryId || '') ? DEFAULT_FORM_STATE : formState;
+
+      // Clean up links involving the deleted instances
+      const deletedInstanceIds = new Set(
+        instances.filter((e) => e.blueprintId && idsSet.has(e.blueprintId)).map((e) => e.id)
+      );
+      const linksToRemove = dynamicData.filter(
+        (d) => d.dataType === 'link' && (
+          deletedInstanceIds.has(d.value.split(':')[0]) || 
+          deletedInstanceIds.has(d.displayAs.split(':')[0])
+        )
+      );
+      for (const link of linksToRemove) {
+        void deleteDynamicData(link.id);
+      }
+
+      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState);
+    },
+    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData],
   );
 
   const deleteInstance = useCallback(
@@ -1078,6 +1122,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     addInstances,
     updateInstance,
     deleteBlueprint,
+    deleteBlueprints,
     deleteInstance,
     setHiddenDays,
     detectConflicts,

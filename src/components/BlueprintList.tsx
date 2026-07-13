@@ -8,6 +8,7 @@ interface BlueprintListProps {
   blueprints: SubjectEntry[];
   onEdit: (entry: SubjectEntry) => void;
   onDelete: (id: string) => void;
+  onDeleteBatch?: (ids: string[]) => void;
   hiddenEntryIds: string[];
   onToggleHide: (id: string) => void;
   editingEntryId?: string | null;
@@ -38,6 +39,7 @@ export const BlueprintList = memo(function BlueprintList({
   blueprints,
   onEdit,
   onDelete,
+  onDeleteBatch,
   hiddenEntryIds,
   onToggleHide,
   editingEntryId,
@@ -140,7 +142,14 @@ export const BlueprintList = memo(function BlueprintList({
           okText="Delete All"
           okButtonProps={{ danger: true, size: 'small' }}
           cancelButtonProps={{ size: 'small' }}
-          onConfirm={() => { processedEntries.forEach(e => onDelete(e.id)); setSelectedIds(new Set()); }}
+          onConfirm={() => {
+            if (onDeleteBatch) {
+              onDeleteBatch(processedEntries.map(e => e.id));
+            } else {
+              processedEntries.forEach(e => onDelete(e.id));
+            }
+            setSelectedIds(new Set());
+          }}
         >
           <Button
             size="small"
@@ -162,7 +171,14 @@ export const BlueprintList = memo(function BlueprintList({
             size="small"
             danger
             icon={<DeleteOutlined />}
-            onClick={() => { selectedIds.forEach(id => onDelete(id)); setSelectedIds(new Set()); }}
+            onClick={() => {
+              if (onDeleteBatch) {
+                onDeleteBatch(Array.from(selectedIds));
+              } else {
+                selectedIds.forEach(id => onDelete(id));
+              }
+              setSelectedIds(new Set());
+            }}
             style={{ fontSize: 10, height: 22 }}
           >
             Delete Selected

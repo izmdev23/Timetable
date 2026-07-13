@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import gsap from 'gsap';
-import { Layout, Typography, Spin, message, Button, Modal, List, Select, Checkbox, ConfigProvider, Drawer, Space, notification } from 'antd';
+import { Layout, Typography, Spin, message, Button, Modal, List, Select, Checkbox, ConfigProvider, Drawer, Space, notification, Progress } from 'antd';
 import { DeleteOutlined } from '@ant-design/icons';
 import { useTimetableStore } from '../hooks/useTimetableStore';
 import { getLinks, getConnectedKeys } from '../utils/linkUtils';
@@ -129,17 +129,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [notificationApi, notificationContextHolder] = notification.useNotification();
   const [statusMessage, setStatusMessage] = useState('');
 
-  useEffect(() => {
-    const handleUndo = () => store.undo();
-    const handleRedo = () => store.redo();
-    window.addEventListener('titlebar:undo', handleUndo);
-    window.addEventListener('titlebar:redo', handleRedo);
-    return () => {
-      window.removeEventListener('titlebar:undo', handleUndo);
-      window.removeEventListener('titlebar:redo', handleRedo);
-    };
-  }, [store]);
-
   // Prevent default window dragover/drop behaviors to allow Tauri/WebView2 HTML5 drag and drop
   useEffect(() => {
     const preventDefault = (e: DragEvent) => {
@@ -226,6 +215,27 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const [importExcelSkippedDrawerOpen, setImportExcelSkippedDrawerOpen] = useState(false);
   const [importExcelPreviewRows, setImportExcelPreviewRows] = useState<string[][] | undefined>(undefined);
   const [importNotifications, setImportNotifications] = useState<string[]>([]);
+
+  // Import Progress Modal States
+  const [importProgressModalOpen, setImportProgressModalOpen] = useState(false);
+  const [importProgressStatus, setImportProgressStatus] = useState('');
+  const [importProgressPercent, setImportProgressPercent] = useState(0);
+  const [importProgressSubtext, setImportProgressSubtext] = useState('');
+
+  // Excel Import Summary Modal States
+  const [importSummaryModalOpen, setImportSummaryModalOpen] = useState(false);
+  const [importSummaryDetails, setImportSummaryDetails] = useState<{
+    blueprintsCount: number;
+    schedulesCount: number;
+    linksCount: number;
+    conflictsCount: number;
+    skippedCount: number;
+  }>({ blueprintsCount: 0, schedulesCount: 0, linksCount: 0, conflictsCount: 0, skippedCount: 0 });
+
+  // Undo/Redo Progress States
+  const [undoRedoLoading, setUndoRedoLoading] = useState(false);
+  const [undoRedoAction, setUndoRedoAction] = useState<'Undo' | 'Redo'>('Undo');
+  const [undoRedoProgress, setUndoRedoProgress] = useState(0);
 
   // Link Binding States
   const [linkingModeActive, setLinkingModeActive] = useState(false);
@@ -1092,7 +1102,12 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       limitToBuilding = false,
     } = payload;
     setImportExcelLoading(true);
+    setImportProgressModalOpen(true);
+    setImportProgressStatus('Importing blueprints');
+    setImportProgressPercent(0);
+    setImportProgressSubtext('');
 
+    const dynamicData = store.dynamicData;
     const notifications: string[] = [];
     const skipped: string[] = [];
     const blueprintMap = new Map<string, SubjectEntry>();
@@ -1180,8 +1195,24 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       const unknownRooms = new Map<string, { roomName: string; buildingName: string; count: number }>();
       const unknownInstructors = new Map<string, { firstName: string; middleName: string; lastName: string }[]>();
 
+      const rows: any[] = [];
       worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return;
+        rows.push({ row, rowNumber });
+      });
+
+      const totalRows = rows.length - 1;
+      let processedRows = 0;
+
+      interface ResolutionJob {
+        instance: SubjectEntry;
+        rowRooms: string[];
+        blueprintBuilding: string;
+        rowNumber: number;
+      }
+      const resolutionJobs: ResolutionJob[] = [];
+
+      for (const { row, rowNumber } of rows) {
+        if (rowNumber === 1) continue;
 
         const getVal = (mp: Record<string, number>, field: string): string => {
           const idx = mp[field];
@@ -1195,7 +1226,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
         if (!subjectCode && !offerCode) {
           skipped.push(`Row ${rowNumber}: missing subject code and offer code`);
-          return;
+          processedRows++;
+          continue;
         }
 
         const subjectDescription = getVal(colMap, 'subjectDescription');
@@ -1209,7 +1241,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         const blueprintBuilding = rawBlueprintBuilding.trim();
         const fullBlueprintRoom = blueprintRoom && blueprintBuilding ? `${blueprintRoom}|${blueprintBuilding}` : blueprintRoom;
 
-        const dynamicData = store.dynamicData;
         const yearNum = parseInt(yearStr, 10);
 
         if (blueprintBuilding && !dynamicData.some((d: DynamicData) => d.dataType === 'building' && d.value === blueprintBuilding)) {
@@ -1217,7 +1248,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             missingBuildings.add(blueprintBuilding);
           } else {
             skipped.push(`Row ${rowNumber}: unknown building "${blueprintBuilding}"`);
-            return;
+            processedRows++;
+            continue;
           }
         }
 
@@ -1236,14 +1268,16 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
 
         if (yearStr && isNaN(yearNum)) {
           skipped.push(`Row ${rowNumber}: invalid year "${yearStr}"`);
-          return;
+          processedRows++;
+          continue;
         }
         if (program && !dynamicData.some((d: DynamicData) => d.dataType === 'program' && d.value === program)) {
           if (autoCreateMissing) {
             missingPrograms.add(program);
           } else {
             skipped.push(`Row ${rowNumber}: unknown program "${program}"`);
-            return;
+            processedRows++;
+            continue;
           }
         }
         if (section && !dynamicData.some((d: DynamicData) => d.dataType === 'section' && d.value === section)) {
@@ -1251,7 +1285,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             missingSections.add(section);
           } else {
             skipped.push(`Row ${rowNumber}: unknown section "${section}"`);
-            return;
+            processedRows++;
+            continue;
           }
         }
         if (yearStr && !dynamicData.some((d: DynamicData) => d.dataType === 'year' && d.value === yearStr)) {
@@ -1259,7 +1294,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             missingYears.add(yearStr);
           } else {
             skipped.push(`Row ${rowNumber}: unknown year "${yearStr}"`);
-            return;
+            processedRows++;
+            continue;
           }
         }
         if (department && !dynamicData.some((d: DynamicData) => d.dataType === 'department' && d.value === department)) {
@@ -1267,7 +1303,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             missingDepartments.add(department);
           } else {
             skipped.push(`Row ${rowNumber}: unknown department "${department}"`);
-            return;
+            processedRows++;
+            continue;
           }
         }
 
@@ -1286,89 +1323,143 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           blueprintsToAdd.push(bp);
         }
 
-        if (!includeSchedule) return;
+        if (includeSchedule) {
+          const DAYS: DayOfWeek[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+          const DAY_KEYS = ['monIn', 'monOut', 'tueIn', 'tueOut', 'wedIn', 'wedOut', 'thuIn', 'thuOut', 'friIn', 'friOut', 'satIn', 'satOut', 'sunIn', 'sunOut'];
 
-        const DAYS: DayOfWeek[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-        const DAY_KEYS = ['monIn', 'monOut', 'tueIn', 'tueOut', 'wedIn', 'wedOut', 'thuIn', 'thuOut', 'friIn', 'friOut', 'satIn', 'satOut', 'sunIn', 'sunOut'];
+          const rawRoom = getVal(schedColMap, 'room');
+          const rowRooms = rawRoom.split(',').map((r) => r.trim()).filter(Boolean);
 
-        const rawRoom = getVal(schedColMap, 'room');
-        const rowRooms = rawRoom.split(',').map((r) => r.trim()).filter(Boolean);
-        let roomIndex = 0;
+          for (let d = 0; d < 7; d++) {
+            const startRaw = getVal(schedColMap, DAY_KEYS[d * 2]);
+            const endRaw = getVal(schedColMap, DAY_KEYS[d * 2 + 1]);
 
-        for (let d = 0; d < 7; d++) {
-          const startRaw = getVal(schedColMap, DAY_KEYS[d * 2]);
-          const endRaw = getVal(schedColMap, DAY_KEYS[d * 2 + 1]);
+            const startTime = cleanTimeVal(startRaw, timeFormat);
+            const endTime = cleanTimeVal(endRaw, timeFormat);
 
-          const startTime = cleanTimeVal(startRaw, timeFormat);
-          const endTime = cleanTimeVal(endRaw, timeFormat);
+            if (!startTime && !endTime) continue;
 
-          if (!startTime && !endTime) continue;
-
-          if (startRaw && !startTime) {
-            notifications.push(`Row ${rowNumber}: invalid start time format for ${DAYS[d]}`);
-            continue;
-          }
-          if (endRaw && !endTime) {
-            notifications.push(`Row ${rowNumber}: invalid end time format for ${DAYS[d]}`);
-            continue;
-          }
-          if (!startTime || !endTime) {
-            notifications.push(`Row ${rowNumber}: incomplete time for ${DAYS[d]} (need both start and end)`);
-            continue;
-          }
-
-          const firstName = getVal(schedColMap, 'firstName');
-          const middleName = getVal(schedColMap, 'middleName');
-          const lastName = getVal(schedColMap, 'lastName');
-
-          if ((firstName || middleName || lastName) && !instructorExists(dynamicData, firstName, middleName, lastName)) {
-            const displayName = `${lastName}, ${firstName} ${middleName}`.trim();
-            if (!unknownInstructors.has(displayName)) {
-              unknownInstructors.set(displayName, []);
+            if (startRaw && !startTime) {
+              notifications.push(`Row ${rowNumber}: invalid start time format for ${DAYS[d]}`);
+              continue;
             }
-            unknownInstructors.get(displayName)!.push({ firstName, middleName, lastName });
+            if (endRaw && !endTime) {
+              notifications.push(`Row ${rowNumber}: invalid end time format for ${DAYS[d]}`);
+              continue;
+            }
+            if (!startTime || !endTime) {
+              notifications.push(`Row ${rowNumber}: incomplete time for ${DAYS[d]} (need both start and end)`);
+              continue;
+            }
+
+            const firstName = getVal(schedColMap, 'firstName');
+            const middleName = getVal(schedColMap, 'middleName');
+            const lastName = getVal(schedColMap, 'lastName');
+
+            if ((firstName || middleName || lastName) && !instructorExists(dynamicData, firstName, middleName, lastName)) {
+              const displayName = `${lastName}, ${firstName} ${middleName}`.trim();
+              if (!unknownInstructors.has(displayName)) {
+                unknownInstructors.set(displayName, []);
+              }
+              unknownInstructors.get(displayName)!.push({ firstName, middleName, lastName });
+            }
+
+            const instructorDisplayName = formatInstructorDisplay(firstName, middleName, lastName);
+
+            const schedId = crypto.randomUUID();
+            const instanceId = crypto.randomUUID();
+            
+            const initialRoom = rowRooms[0] || '';
+            const initialFullRoom = initialRoom && blueprintBuilding ? `${initialRoom}|${blueprintBuilding}` : initialRoom;
+
+            const dummySched: Schedule = {
+              id: schedId,
+              days: [DAYS[d]],
+              startTime,
+              endTime,
+              rooms: initialFullRoom ? [initialFullRoom] : [],
+              assignedTeacherName: instructorDisplayName || undefined,
+            };
+            const dummyInstance: SubjectEntry = {
+              id: instanceId,
+              subjectCode, offerCode, subjectDescription,
+              assignedTeacherName: instructorDisplayName,
+              room: initialFullRoom || '',
+              program, year: yearNum || 0, section,
+              department,
+              schedules: [dummySched],
+              blueprintId: blueprintMap.get(bpKey)!.id,
+            };
+
+            instancesToAdd.push(dummyInstance);
+
+            if (autoFixConflicts && rowRooms.length > 0) {
+              resolutionJobs.push({
+                instance: dummyInstance,
+                rowRooms,
+                blueprintBuilding,
+                rowNumber,
+              });
+            } else {
+              if (initialFullRoom) {
+                const parts = initialFullRoom.split('|');
+                const rVal = parts[0];
+                const bVal = parts[1] || 'External';
+                if (!roomExists(dynamicData, rVal, bVal)) {
+                  const key = `${rVal}|${bVal}`;
+                  const existing = unknownRooms.get(key);
+                  if (existing) {
+                    existing.count++;
+                  } else {
+                    unknownRooms.set(key, { roomName: rVal, buildingName: bVal, count: 1 });
+                  }
+                }
+              }
+            }
           }
+        }
 
-          const instructorDisplayName = formatInstructorDisplay(firstName, middleName, lastName);
+        processedRows++;
+        if (processedRows % 10 === 0 || processedRows === totalRows) {
+          setImportProgressPercent((processedRows / totalRows) * 100);
+          setImportProgressSubtext(`Processing row ${rowNumber} of ${rows.length - 1}...`);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
 
-          const schedId = crypto.randomUUID();
-          const instanceId = crypto.randomUUID();
-          const dummySched: Schedule = {
-            id: schedId,
-            days: [DAYS[d]],
-            startTime,
-            endTime,
-            rooms: [],
-            assignedTeacherName: instructorDisplayName || undefined,
-          };
-          const dummyInstance: SubjectEntry = {
-            id: instanceId,
-            subjectCode, offerCode, subjectDescription,
-            assignedTeacherName: instructorDisplayName,
-            room: '',
-            program, year: yearNum || 0, section,
-            department,
-            schedules: [dummySched],
-            blueprintId: blueprintMap.get(bpKey)!.id,
-          };
+      if (autoFixConflicts && resolutionJobs.length > 0) {
+        setImportProgressStatus('Fixing conflicting schedules');
+        setImportProgressPercent(0);
+        setImportProgressSubtext('');
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        const rowRoomIndices = new Map<number, number>();
+        let processedJobs = 0;
+
+        for (const job of resolutionJobs) {
+          const roomIndex = rowRoomIndices.get(job.rowNumber) || 0;
+          const otherInstances = instancesToAdd.filter((inst) => inst.id !== job.instance.id);
 
           const resolution = resolveRoomForSchedule({
-            schedule: dummySched,
-            candidateEntry: dummyInstance,
-            instancesToAdd,
+            schedule: job.instance.schedules[0],
+            candidateEntry: job.instance,
+            instancesToAdd: otherInstances,
             storeInstances: store.instances,
             dynamicData,
             detectConflicts: store.detectConflicts,
-            rowRooms,
-            blueprintBuilding,
-            autoFixConflicts,
+            rowRooms: job.rowRooms,
+            blueprintBuilding: job.blueprintBuilding,
+            autoFixConflicts: true,
             allowAnyRoom,
             limitToBuilding,
             roomIndex,
           });
 
           const finalRoomVal = resolution.roomVal;
-          roomIndex = resolution.nextRoomIndex;
+          rowRoomIndices.set(job.rowNumber, resolution.nextRoomIndex);
+
+          job.instance.room = finalRoomVal || '';
+          job.instance.schedules[0].rooms = finalRoomVal ? [finalRoomVal] : [];
 
           if (finalRoomVal) {
             const parts = finalRoomVal.split('|');
@@ -1385,19 +1476,14 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
             }
           }
 
-          const schedule: Schedule = {
-            ...dummySched,
-            rooms: finalRoomVal ? [finalRoomVal] : [],
-          };
-
-          const instance: SubjectEntry = {
-            ...dummyInstance,
-            room: finalRoomVal || '',
-            schedules: [schedule],
-          };
-          instancesToAdd.push(instance);
+          processedJobs++;
+          if (processedJobs % 5 === 0 || processedJobs === resolutionJobs.length) {
+            setImportProgressPercent((processedJobs / resolutionJobs.length) * 100);
+            setImportProgressSubtext(`Resolving conflict for schedule ${processedJobs} of ${resolutionJobs.length}...`);
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
         }
-      });
+      }
 
       if (autoCreateMissing) {
         for (const programVal of missingPrograms) {
@@ -1448,7 +1534,6 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       }
 
       if (instancesToAdd.length > 0) {
-
         const groups = new Map<string, SubjectEntry[]>();
         for (const inst of instancesToAdd) {
           const key = `${inst.subjectCode}|${inst.offerCode}`;
@@ -1486,28 +1571,32 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         }
       }
 
-      const msg = `Imported ${blueprintsToAdd.length} blueprint(s)`;
-      const schedMsg = includeSchedule ? `, ${instancesToAdd.length} schedule(s) placed, ${linkPairs.length} link(s) created` : '';
-      messageApi.success(msg + schedMsg);
+      let totalConflicts = 0;
+      const finalInstances = [...store.instances, ...instancesToAdd];
+      for (const inst of finalInstances) {
+        const conflicts = store.detectConflicts(inst, finalInstances);
+        if (conflicts.length > 0) {
+          totalConflicts++;
+        }
+      }
+
+      const summaryMsg = `Import Completed: ${blueprintsToAdd.length} blueprints imported, ${instancesToAdd.length} schedules placed, ${linkPairs.length} links created. Total schedules in conflict: ${totalConflicts}.`;
+      setImportNotifications([
+        summaryMsg,
+        ...notifications,
+        ...skipped.map((s) => `Skipped: ${s}`),
+      ]);
+
+      setImportSummaryDetails({
+        blueprintsCount: blueprintsToAdd.length,
+        schedulesCount: instancesToAdd.length,
+        linksCount: linkPairs.length,
+        conflictsCount: totalConflicts,
+        skippedCount: skipped.length,
+      });
+      setImportSummaryModalOpen(true);
 
       setImportExcelSkipped(skipped);
-      if (skipped.length > 0) setImportExcelSkippedDrawerOpen(true);
-
-      setImportNotifications(notifications);
-
-      if (notifications.length > 0) {
-        notificationApi.warning({
-          message: 'Import Notifications',
-          description: (
-            <div style={{ whiteSpace: 'pre-wrap', maxHeight: 300, overflowY: 'auto' }}>
-              {notifications.map((n, i) => (
-                <div key={i} style={{ marginBottom: 4 }}>• {n}</div>
-              ))}
-            </div>
-          ),
-          duration: 10,
-        });
-      }
 
       setImportExcelModalOpen(false);
       setImportExcelFileBytes(null);
@@ -1518,6 +1607,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       messageApi.error(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setImportExcelLoading(false);
+      setImportProgressModalOpen(false);
     }
   }, [importExcelFileBytes, store, messageApi, notificationApi]);
 
@@ -1658,6 +1748,39 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
     setMoveRoomOpen(true);
   }, []);
 
+  const runUndoRedo = useCallback(async (action: 'Undo' | 'Redo', fn: () => void) => {
+    setUndoRedoAction(action);
+    setUndoRedoLoading(true);
+    setUndoRedoProgress(0);
+    const steps = 10;
+    const intervalTime = 80;
+    for (let i = 1; i <= steps; i++) {
+      await new Promise((resolve) => setTimeout(resolve, intervalTime));
+      setUndoRedoProgress((i / steps) * 100);
+    }
+    fn();
+    setUndoRedoLoading(false);
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    if (!store.canUndo) return;
+    void runUndoRedo('Undo', store.undo);
+  }, [store.undo, store.canUndo, runUndoRedo]);
+
+  const handleRedo = useCallback(() => {
+    if (!store.canRedo) return;
+    void runUndoRedo('Redo', store.redo);
+  }, [store.redo, store.canRedo, runUndoRedo]);
+
+  useEffect(() => {
+    window.addEventListener('titlebar:undo', handleUndo);
+    window.addEventListener('titlebar:redo', handleRedo);
+    return () => {
+      window.removeEventListener('titlebar:undo', handleUndo);
+      window.removeEventListener('titlebar:redo', handleRedo);
+    };
+  }, [handleUndo, handleRedo]);
+
   const handleConfirmMoveRoom = useCallback(async () => {
     if (!moveRoomBlockKey || !moveTargetRoom || !moveTargetBuilding) return;
     const [entryId, scheduleId] = moveRoomBlockKey.split(':');
@@ -1673,7 +1796,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       }
     }
 
-    const newRoomValue = `${moveTargetRoom}|${moveTargetBuilding}`;
+    const newRoomValue = moveTargetRoom;
     const updatedSchedule = { ...schedule, rooms: [newRoomValue] };
     const updatedSchedules = entry.schedules.map(s => s.id === scheduleId ? updatedSchedule : s);
     const updatedEntry = { ...entry, schedules: updatedSchedules, room: newRoomValue };
@@ -1893,8 +2016,8 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           onImportMerge={handleMergeImport}
           canUndo={store.canUndo}
           canRedo={store.canRedo}
-          onUndo={store.undo}
-          onRedo={store.redo}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
           filterType={filterType}
           onFilterTypeChange={setFilterType}
           selectedStudentKey={selectedStudentKey}
@@ -1947,6 +2070,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
               blueprints={store.blueprints}
               onEdit={handleEdit}
               onDelete={store.deleteBlueprint}
+              onDeleteBatch={store.deleteBlueprints}
               hiddenEntryIds={hiddenEntryIds}
               onToggleHide={handleToggleHideEntry}
               editingEntryId={editingEntry?.id}
@@ -2440,6 +2564,96 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           />
         )}
       </Drawer>
+
+      {/* Import Progress Modal */}
+      <Modal
+        open={importProgressModalOpen}
+        closable={false}
+        footer={null}
+        maskClosable={false}
+        destroyOnClose
+        centered
+        width={400}
+      >
+        <div style={{ textAlign: 'center', padding: '12px 0' }}>
+          <Typography.Title level={4} style={{ marginBottom: 16 }}>
+            {importProgressStatus}
+          </Typography.Title>
+          <Progress percent={Math.round(importProgressPercent)} status="active" />
+          {importProgressSubtext && (
+            <Typography.Text type="secondary" style={{ display: 'block', marginTop: 12 }}>
+              {importProgressSubtext}
+            </Typography.Text>
+          )}
+        </div>
+      </Modal>
+
+      {/* Undo/Redo Progress Modal */}
+      <Modal
+        open={undoRedoLoading}
+        closable={false}
+        footer={null}
+        maskClosable={false}
+        destroyOnClose
+        centered
+        width={300}
+      >
+        <div style={{ textAlign: 'center', padding: '12px 0' }}>
+          <Typography.Title level={5} style={{ marginBottom: 12 }}>
+            {undoRedoAction} ongoing...
+          </Typography.Title>
+          <Progress percent={Math.round(undoRedoProgress)} size="small" status="active" />
+        </div>
+      </Modal>
+
+      {/* Excel Import Summary Modal */}
+      <Modal
+        title="Excel Import Completed"
+        open={importSummaryModalOpen}
+        onOk={() => setImportSummaryModalOpen(false)}
+        onCancel={() => setImportSummaryModalOpen(false)}
+        okText="Close"
+        cancelButtonProps={{ style: { display: 'none' } }}
+        width={450}
+        centered
+      >
+        <div style={{ padding: '8px 0' }}>
+          <p style={{ fontWeight: 500, fontSize: '14px', marginBottom: 16 }}>
+            The Excel blueprint import has finished.
+          </p>
+          <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
+            <tbody>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 0', color: '#595959' }}>Blueprints Imported</td>
+                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600 }}>{importSummaryDetails.blueprintsCount}</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 0', color: '#595959' }}>Schedules Placed</td>
+                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600 }}>{importSummaryDetails.schedulesCount}</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 0', color: '#595959' }}>Links Created</td>
+                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600 }}>{importSummaryDetails.linksCount}</td>
+              </tr>
+              <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                <td style={{ padding: '8px 0', color: '#595959' }}>Schedules Still in Conflict</td>
+                <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: importSummaryDetails.conflictsCount > 0 ? '#ff4d4f' : '#52c41a' }}>
+                  {importSummaryDetails.conflictsCount}
+                </td>
+              </tr>
+              {importSummaryDetails.skippedCount > 0 && (
+                <tr style={{ borderBottom: '1px solid #f0f0f0' }}>
+                  <td style={{ padding: '8px 0', color: '#595959' }}>Skipped Rows</td>
+                  <td style={{ padding: '8px 0', textAlign: 'right', fontWeight: 600, color: '#faad14' }}>{importSummaryDetails.skippedCount}</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <p style={{ fontSize: '12px', color: '#8c8c8c' }}>
+            Detailed logs and notifications are available in the generic notification panel (bell icon) in the bottom statusbar.
+          </p>
+        </div>
+      </Modal>
     </ConfigProvider>
   );
 }
