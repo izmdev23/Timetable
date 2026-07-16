@@ -1,4 +1,4 @@
-import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, Tabs, Card, Dropdown, message, Modal } from 'antd';
+import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, InputNumber, Tabs, Card, Dropdown, message, Modal } from 'antd';
 import { Sketch } from '@uiw/react-color';
 import {
   SaveOutlined,
@@ -13,6 +13,7 @@ import {
   SolutionOutlined,
   HomeOutlined,
   BgColorsOutlined,
+  TeamOutlined,
 } from '@ant-design/icons';
 import type { DayOfWeek } from '../types';
 import { DAY_ORDER } from '../types';
@@ -83,6 +84,17 @@ interface RibbonToolbarProps {
   addDynamicData: (dataType: string, value: string, displayAs: string) => Promise<void>;
   deleteDynamicData: (id: string) => Promise<void>;
   updateDynamicData: (id: string, dataType: string, value: string, displayAs: string) => Promise<void>;
+
+  // Cell sizing
+  globalColWidth: number;
+  globalRowHeight: number;
+  onApplyGlobalCellSizing: (width: number, height: number) => void;
+
+  // Collaboration
+  isCollabConnected?: boolean;
+  onHostSession?: () => void;
+  onJoinSession?: () => void;
+  onLeaveSession?: () => void;
 }
 
 export function RibbonToolbar({
@@ -126,12 +138,33 @@ export function RibbonToolbar({
   addDynamicData,
   deleteDynamicData,
   updateDynamicData,
+  globalColWidth,
+  globalRowHeight,
+  onApplyGlobalCellSizing,
+
+  isCollabConnected,
+  onHostSession,
+  onJoinSession,
+  onLeaveSession,
 }: RibbonToolbarProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [form] = Form.useForm();
   const [editingDynamicId, setEditingDynamicId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<string>('department');
   const [sortOrder, setSortOrder] = useState<'created' | 'name-asc' | 'name-desc'>('created');
+
+  // Local inputs for cell sizing – applied on blur or Enter
+  const [colWidthInput, setColWidthInput] = useState<number>(globalColWidth);
+  const [rowHeightInput, setRowHeightInput] = useState<number>(globalRowHeight);
+
+  useEffect(() => { setColWidthInput(globalColWidth); }, [globalColWidth]);
+  useEffect(() => { setRowHeightInput(globalRowHeight); }, [globalRowHeight]);
+
+  const applySizing = () => {
+    const w = Math.max(60, colWidthInput);
+    const h = Math.max(18, rowHeightInput);
+    onApplyGlobalCellSizing(w, h);
+  };
 
   const isCustom = theme && theme.startsWith('custom:');
   const customHex = isCustom ? theme.split(':')[1] : '#2B4C7E';
@@ -264,6 +297,47 @@ export function RibbonToolbar({
           </Button>
         </Space>
         <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>INSERT</Text>
+      </div>
+
+      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
+
+      {/* Collaboration */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+        <Space size={2}>
+          <Tooltip title="Host Session">
+            <Button
+              icon={<TeamOutlined />}
+              onClick={onHostSession}
+              disabled={isCollabConnected}
+              style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
+            >
+              <span>Host</span>
+            </Button>
+          </Tooltip>
+          <Tooltip title="Join Session">
+            <Button
+              icon={<TeamOutlined />}
+              onClick={onJoinSession}
+              disabled={isCollabConnected}
+              style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
+            >
+              <span>Join</span>
+            </Button>
+          </Tooltip>
+          {isCollabConnected && (
+            <Tooltip title="Leave Session">
+              <Button
+                danger
+                icon={<TeamOutlined />}
+                onClick={onLeaveSession}
+                style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
+              >
+                <span>Leave</span>
+              </Button>
+            </Tooltip>
+          )}
+        </Space>
+        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>COLLAB</Text>
       </div>
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
@@ -462,6 +536,47 @@ export function RibbonToolbar({
           />
         </Space>
         <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, marginTop: 2 }}>TIMETABLE WINDOW</Text>
+      </div>
+
+      {/* CELL SIZING group */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', paddingInline: 8, borderRight: '1px solid #2A3A52' }}>
+        <Space size={4}>
+          <Space direction="vertical" size={0} style={{ alignItems: 'center' }}>
+            <InputNumber
+              size="small"
+              min={60}
+              max={400}
+              style={{ width: 64 }}
+              value={colWidthInput}
+              onChange={(v) => v !== null && setColWidthInput(v)}
+              onBlur={applySizing}
+              onKeyDown={(e) => { if (e.key === 'Enter') applySizing(); }}
+            />
+            <Text style={{ fontSize: 9, color: '#7A8BA8' }}>COL W</Text>
+          </Space>
+          <Space direction="vertical" size={0} style={{ alignItems: 'center' }}>
+            <InputNumber
+              size="small"
+              min={18}
+              max={200}
+              style={{ width: 64 }}
+              value={rowHeightInput}
+              onChange={(v) => v !== null && setRowHeightInput(v)}
+              onBlur={applySizing}
+              onKeyDown={(e) => { if (e.key === 'Enter') applySizing(); }}
+            />
+            <Text style={{ fontSize: 9, color: '#7A8BA8' }}>ROW H</Text>
+          </Space>
+          <Tooltip title="Reset to defaults">
+            <Button
+              size="small"
+              icon={<UndoOutlined />}
+              onClick={() => onApplyGlobalCellSizing(130, 36)}
+              style={{ marginTop: -2 }}
+            />
+          </Tooltip>
+        </Space>
+        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, marginTop: 2 }}>CELL SIZING</Text>
       </div>
 
       <Drawer

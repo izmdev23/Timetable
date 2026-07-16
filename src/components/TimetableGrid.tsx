@@ -37,6 +37,11 @@ interface TimetableGridProps {
   onCopyBlocks: (blockKeys: string[]) => void;
   onPasteBlocks: () => void;
   canPaste: boolean;
+  columnWidths: Record<string, number>;
+  rowHeights: Record<number, number>;
+  globalColWidth: number;
+  globalRowHeight: number;
+  onCommitCellSizes: (newColumnWidths: Record<string, number>, newRowHeights: Record<number, number>) => void;
 }
 
 interface SlotEntry {
@@ -62,7 +67,6 @@ function toTime(min: number): string {
   return minutesTo12Hr(min);
 }
 
-const ROW_HEIGHT = 36;
 const COL_WIDTH = 130;
 const TIME_COL_WIDTH = 72;
 const SLOT_INTERVAL = 30;
@@ -94,7 +98,153 @@ export const TimetableGrid = memo(function TimetableGrid({
   onCopyBlocks,
   onPasteBlocks,
   canPaste,
+  columnWidths: columnWidthsProp,
+  rowHeights: rowHeightsProp,
+  globalColWidth,
+  globalRowHeight,
+  onCommitCellSizes,
 }: TimetableGridProps) {
+  const [columnWidths, setColumnWidths] = useState<Record<string, number>>(columnWidthsProp);
+  const [rowHeights, setRowHeights] = useState<Record<number, number>>(rowHeightsProp);
+
+  useEffect(() => {
+    setColumnWidths(columnWidthsProp);
+  }, [columnWidthsProp]);
+
+  useEffect(() => {
+    setRowHeights(rowHeightsProp);
+  }, [rowHeightsProp]);
+
+  const columnWidthsRef = useRef(columnWidths);
+  columnWidthsRef.current = columnWidths;
+  const rowHeightsRef = useRef(rowHeights);
+  rowHeightsRef.current = rowHeights;
+  const globalRowHeightRef = useRef(globalRowHeight);
+  globalRowHeightRef.current = globalRowHeight;
+
+  const rowCount = (viewEnd - viewStart) / SLOT_INTERVAL;
+  const rowCountRef = useRef(rowCount);
+  rowCountRef.current = rowCount;
+
+  const rowLayout = useMemo(() => {
+    const tops: number[] = [];
+    const heights: number[] = [];
+    let currentTop = 0;
+    for (let i = 0; i < rowCount; i++) {
+      const h = rowHeights[i] ?? globalRowHeight;
+      tops.push(currentTop);
+      heights.push(h);
+      currentTop += h;
+    }
+    return { tops, heights, totalHeight: currentTop };
+  }, [rowHeights, rowCount, globalRowHeight]);
+  const rowLayoutRef = useRef(rowLayout);
+  rowLayoutRef.current = rowLayout;
+
+  const getPxFromMinutes = (min: number) => {
+    const slotsFloat = (min - viewStart) / SLOT_INTERVAL;
+    const index = Math.floor(slotsFloat);
+    const fraction = slotsFloat - index;
+    if (index < 0) return 0;
+    if (index >= rowCount) return rowLayout.totalHeight;
+    const currentTop = rowLayout.tops[index];
+    const nextTop = index === rowCount - 1
+      ? currentTop + (rowHeights[index] ?? globalRowHeight)
+      : rowLayout.tops[index + 1];
+    return currentTop + fraction * (nextTop - currentTop);
+  };
+
+  const getSlotIndexFromY = (y: number) => {
+    for (let i = 0; i < rowCount; i++) {
+      const top = rowLayout.tops[i];
+      const bottom = top + (rowHeights[i] ?? globalRowHeight);
+      if (y >= top && y < bottom) {
+        return i;
+      }
+    }
+    if (y < 0) return 0;
+    return rowCount - 1;
+  };
+
+  const getHoveredDayColumn = (clientX: number) => {
+    const columns = document.querySelectorAll('.grid-day-column');
+    for (const col of columns) {
+      const rect = col.getBoundingClientRect();
+      if (clientX >= rect.left && clientX <= rect.right) {
+        return col.getAttribute('data-day-column') as DayOfWeek;
+      }
+    }
+    return null;
+  };
+
+  const startColResize = (e: React.MouseEvent, day: DayOfWeek) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = columnWidths[day] ?? globalColWidth;
+
+    let currentWidths = columnWidthsRef.current;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dx = moveEvent.clientX - startX;
+      const newWidth = Math.max(80, startWidth + dx);
+      setColumnWidths((prev) => {
+        const next = { ...prev, [day]: newWidth };
+        currentWidths = next;
+        return next;
+      });
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      onCommitCellSizes(currentWidths, rowHeightsRef.current);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const startRowResize = (e: React.MouseEvent, index: number) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = rowHeights[index] ?? globalRowHeight;
+
+    let currentHeights = rowHeightsRef.current;
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const dy = moveEvent.clientY - startY;
+      const newHeight = Math.max(24, startHeight + dy);
+      setRowHeights((prev) => {
+        const next = { ...prev, [index]: newHeight };
+        currentHeights = next;
+        return next;
+      });
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      onCommitCellSizes(columnWidthsRef.current, currentHeights);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+  };
+
+  const gridMinWidth = useMemo(() => {
+    let width = TIME_COL_WIDTH;
+    let visibleDays = 0;
+    for (const d of DAY_ORDER) {
+      if (!hiddenDays.includes(d)) {
+        width += columnWidths[d] ?? globalColWidth;
+        visibleDays++;
+      }
+    }
+    return width + visibleDays;
+  }, [columnWidths, hiddenDays, globalColWidth]);
+
   const selectedBlockKeysRef = useRef(selectedBlockKeys);
   selectedBlockKeysRef.current = selectedBlockKeys;
 
@@ -263,16 +413,6 @@ export const TimetableGrid = memo(function TimetableGrid({
     return () => style.remove();
   }, []);
 
-  // Helper: compute drop position for a block during drag
-  const computeDropPosition = (initialDay: DayOfWeek, initialStartMin: number, duration: number, dayShift: number, slotShift: number, vs: number, ve: number) => {
-    const origIdx = DAY_ORDER.indexOf(initialDay);
-    let newIdx = origIdx + dayShift;
-    newIdx = Math.max(0, Math.min(DAY_ORDER.length - 1, newIdx));
-    let startMin = initialStartMin + slotShift * 30;
-    startMin = Math.max(vs, Math.min(ve - duration, startMin));
-    return { day: DAY_ORDER[newIdx], top: ((startMin - vs) / 30) * ROW_HEIGHT };
-  };
-
   // Marquee state (refs)
   const marqueeElRef = useRef<HTMLDivElement | null>(null);
   const marqueeDataRef = useRef<{
@@ -285,6 +425,47 @@ export const TimetableGrid = memo(function TimetableGrid({
   // Global mousemove/mouseup for drag + marquee
   useEffect(() => {
     const DRAG_THRESHOLD = 4;
+
+    // Ref-based helpers (not stale — read from refs)
+    const getSlotIdxFromY = (y: number) => {
+      const layout = rowLayoutRef.current;
+      const heights = rowHeightsRef.current;
+      const gH = globalRowHeightRef.current;
+      const rc = rowCountRef.current;
+      for (let i = 0; i < rc; i++) {
+        const top = layout.tops[i];
+        const bottom = top + (heights[i] ?? gH);
+        if (y >= top && y < bottom) return i;
+      }
+      return y < 0 ? 0 : rc - 1;
+    };
+
+    const getPxFromMin = (min: number) => {
+      const vs = viewStartRef.current;
+      const layout = rowLayoutRef.current;
+      const heights = rowHeightsRef.current;
+      const gH = globalRowHeightRef.current;
+      const rc = rowCountRef.current;
+      const slotsFloat = (min - vs) / SLOT_INTERVAL;
+      const index = Math.floor(slotsFloat);
+      const fraction = slotsFloat - index;
+      if (index < 0) return 0;
+      if (index >= rc) return layout.totalHeight;
+      const currentTop = layout.tops[index];
+      const nextTop = index === rc - 1
+        ? currentTop + (heights[index] ?? gH)
+        : layout.tops[index + 1];
+      return currentTop + fraction * (nextTop - currentTop);
+    };
+
+    const computeDropPos = (initialDay: DayOfWeek, initialStartMin: number, duration: number, dayShift: number, slotShift: number, vs: number, ve: number) => {
+      const origIdx = DAY_ORDER.indexOf(initialDay);
+      let newIdx = origIdx + dayShift;
+      newIdx = Math.max(0, Math.min(DAY_ORDER.length - 1, newIdx));
+      let startMin = initialStartMin + slotShift * SLOT_INTERVAL;
+      startMin = Math.max(vs, Math.min(ve - duration, startMin));
+      return { day: DAY_ORDER[newIdx], top: getPxFromMin(startMin) };
+    };
 
     const handleMouseMove = (e: MouseEvent) => {
       // Promote pending drag to active drag after threshold
@@ -303,8 +484,22 @@ export const TimetableGrid = memo(function TimetableGrid({
       if (d) {
         const deltaX = e.pageX - d.startX;
         const deltaY = e.pageY - d.startY;
-        const dayShift = Math.round(deltaX / COL_WIDTH);
-        const slotShift = Math.round(deltaY / ROW_HEIGHT);
+        let dayShift = 0;
+        let slotShift = 0;
+
+        const dayCol = document.querySelector('.grid-day-column');
+        if (dayCol) {
+          const rect = dayCol.getBoundingClientRect();
+          const startDay = getHoveredDayColumn(d.startX);
+          const currentDay = getHoveredDayColumn(e.clientX);
+          if (startDay && currentDay) {
+            dayShift = DAY_ORDER.indexOf(currentDay) - DAY_ORDER.indexOf(startDay);
+          }
+
+          const startRowIdx = getSlotIdxFromY(d.startY - rect.top);
+          const currentRowIdx = getSlotIdxFromY(e.clientY - rect.top);
+          slotShift = currentRowIdx - startRowIdx;
+        }
         const vs = viewStartRef.current;
         const ve = viewEndRef.current;
 
@@ -318,7 +513,7 @@ export const TimetableGrid = memo(function TimetableGrid({
           if (el) gsap.set(el, { x: deltaX, y: deltaY, opacity: 0.3 });
 
           // Compute target drop position
-          const { day: newDay, top: ghostTop } = computeDropPosition(
+          const { day: newDay, top: ghostTop } = computeDropPos(
             d.initialDays[i], d.initialStartMins[i], d.durations[i],
             dayShift, slotShift, vs, ve
           );
@@ -341,14 +536,17 @@ export const TimetableGrid = memo(function TimetableGrid({
             ghostElsRef.current.set(key, ghost);
           }
 
-          const dayCol = document.querySelector(`[data-day-column="${newDay}"]`);
-          if (dayCol && ghost.parentElement !== dayCol) {
+          const targetDayCol = document.querySelector(`[data-day-column="${newDay}"]`);
+          if (targetDayCol && ghost.parentElement !== targetDayCol) {
             if (ghost.parentElement) ghost.remove();
-            dayCol.appendChild(ghost);
+            targetDayCol.appendChild(ghost);
           }
 
           if (ghost.parentElement) {
-            const heightPx = (d.durations[i] / 30) * ROW_HEIGHT;
+            const duration = d.durations[i];
+            const startMin = d.initialStartMins[i] + slotShift * SLOT_INTERVAL;
+            const clampedStartMin = Math.max(vs, Math.min(ve - duration, startMin));
+            const heightPx = getPxFromMin(clampedStartMin + duration) - ghostTop;
             gsap.set(ghost, { top: ghostTop + 1, left: 2, right: 2, height: Math.max(heightPx - 2, 20) });
           }
         }
@@ -390,10 +588,22 @@ export const TimetableGrid = memo(function TimetableGrid({
           if (el) gsap.set(el, { opacity: 1, x: 0, y: 0 });
         }
 
-        const deltaX = e.pageX - d.startX;
-        const deltaY = e.pageY - d.startY;
-        const dayShift = Math.round(deltaX / COL_WIDTH);
-        const slotShift = Math.round(deltaY / ROW_HEIGHT);
+        let dayShift = 0;
+        let slotShift = 0;
+
+        const dayCol = document.querySelector('.grid-day-column');
+        if (dayCol) {
+          const rect = dayCol.getBoundingClientRect();
+          const startDay = getHoveredDayColumn(d.startX);
+          const currentDay = getHoveredDayColumn(e.clientX);
+          if (startDay && currentDay) {
+            dayShift = DAY_ORDER.indexOf(currentDay) - DAY_ORDER.indexOf(startDay);
+          }
+
+          const startRowIdx = getSlotIdxFromY(d.startY - rect.top);
+          const currentRowIdx = getSlotIdxFromY(e.clientY - rect.top);
+          slotShift = currentRowIdx - startRowIdx;
+        }
 
         // Skip state commits for no-op drags (block didn't actually move)
         if (dayShift === 0 && slotShift === 0) {
@@ -556,9 +766,7 @@ export const TimetableGrid = memo(function TimetableGrid({
     return flat;
   }, [entries]);
 
-  const rowCount = (viewEnd - viewStart) / SLOT_INTERVAL;
-  const gridHeight = rowCount * ROW_HEIGHT;
-  const totalDays = DAY_ORDER.length;
+
 
   const dayEntriesMap = useMemo(() => {
     const map = new Map<string, SlotEntry[]>();
@@ -574,20 +782,21 @@ export const TimetableGrid = memo(function TimetableGrid({
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div ref={gridContainerRef} onScroll={() => { const el = gridContainerRef.current; if (el) { scrollPosRef.current = { left: el.scrollLeft, top: el.scrollTop }; } }} style={{ overflowX: 'auto', overflowY: 'auto', maxHeight: 'calc(100vh - 250px)', border: '1px solid #D0D7E3', borderRadius: 4, position: 'relative' }}>
         <div
+          className="timetable-grid-capture-target"
           onClick={onCancelEdit}
-          style={{ display: 'flex', minWidth: TIME_COL_WIDTH + totalDays * COL_WIDTH, position: 'relative' }}
+          style={{ display: 'flex', minWidth: gridMinWidth, position: 'relative', background: '#FFFFFF' }}
         >
             <div style={{ width: TIME_COL_WIDTH, flexShrink: 0, position: 'sticky', left: 0, zIndex: 3, background: '#F5F7FA' }}>
               <div style={headerCellStyle(TIME_COL_WIDTH, true, theme)}>&nbsp;</div>
-              <div style={{ position: 'relative', height: gridHeight + 4 }}>
+              <div style={{ position: 'relative', height: rowLayout.totalHeight + 4 }}>
                 {Array.from({ length: rowCount }, (_, i) => (
                   <div
                     key={i}
                     style={{
                       position: 'absolute',
-                      top: i * ROW_HEIGHT,
+                      top: rowLayout.tops[i],
                       width: '100%',
-                      height: ROW_HEIGHT,
+                      height: rowLayout.heights[i],
                       display: 'flex',
                       alignItems: 'flex-start',
                       justifyContent: 'flex-end',
@@ -600,12 +809,16 @@ export const TimetableGrid = memo(function TimetableGrid({
                     <Text style={{ fontSize: 10, color: '#7A8BA8', lineHeight: 1 }}>
                       {toTime(viewStart + i * SLOT_INTERVAL)}
                     </Text>
+                    <div
+                      className="row-resizer-handle"
+                      onMouseDown={(e) => startRowResize(e, i)}
+                    />
                   </div>
                 ))}
                 <div
                   style={{
                     position: 'absolute',
-                    top: rowCount * ROW_HEIGHT,
+                    top: rowLayout.totalHeight,
                     width: '100%',
                     height: 4,
                     display: 'flex',
@@ -628,22 +841,25 @@ export const TimetableGrid = memo(function TimetableGrid({
                 return filtered;
               })();
               const isHidden = hiddenDays.includes(day);
+              if (isHidden) return null;
 
               return (
                 <div
                   key={day}
                   style={{
-                    width: COL_WIDTH,
+                    width: columnWidths[day] ?? COL_WIDTH,
                     flexShrink: 0,
                     borderLeft: '1px solid #D0D7E3',
-                    opacity: isHidden ? 0.25 : 1,
-                    transition: 'opacity 0.2s ease',
                   }}
                 >
-                  <div style={headerCellStyle(COL_WIDTH, false, theme)}>
+                  <div style={{ ...headerCellStyle(columnWidths[day] ?? COL_WIDTH, false, theme), position: 'relative' }}>
                     <Text strong style={{ fontSize: 12, color: '#ffffff' }}>
                       {day}
                     </Text>
+                    <div
+                      className="col-resizer-handle"
+                      onMouseDown={(e) => startColResize(e, day)}
+                    />
                   </div>
 
                   <div
@@ -670,11 +886,11 @@ export const TimetableGrid = memo(function TimetableGrid({
                       }
                       const rect = e.currentTarget.getBoundingClientRect();
                       const relativeY = e.clientY - rect.top;
-                      const slotIndex = Math.floor(relativeY / ROW_HEIGHT);
+                      const slotIndex = getSlotIndexFromY(relativeY);
                       const startMin = viewStart + slotIndex * SLOT_INTERVAL;
                       onDropEntry?.(entryId, day, startMin, activeRoom);
                     }}
-                    style={{ position: 'relative', height: gridHeight + 4, transition: 'background-color 0.2s ease' }}
+                    style={{ position: 'relative', height: rowLayout.totalHeight + 4, transition: 'background-color 0.2s ease' }}
                   >
                     <div
                       onMouseDown={(e) => {
@@ -694,10 +910,10 @@ export const TimetableGrid = memo(function TimetableGrid({
                           key={i}
                           style={{
                             position: 'absolute',
-                            top: i * ROW_HEIGHT,
+                            top: rowLayout.tops[i],
                             left: 0,
                             right: 0,
-                            height: ROW_HEIGHT,
+                            height: rowLayout.heights[i],
                             borderTop: i === 0 ? '1px solid #D0D7E3' : '1px dashed #E4E9F0',
                             background: (bandedRows && i % 2 !== 0) ? 'rgba(238,241,246,0.5)' : 'transparent',
                             pointerEvents: 'none',
@@ -708,7 +924,7 @@ export const TimetableGrid = memo(function TimetableGrid({
                     <div
                       style={{
                         position: 'absolute',
-                        top: rowCount * ROW_HEIGHT,
+                        top: rowLayout.totalHeight,
                         left: 0,
                         right: 0,
                         height: 4,
@@ -718,8 +934,8 @@ export const TimetableGrid = memo(function TimetableGrid({
                     />
 
                     {dayEntries.map((se, idx) => {
-                      const topPx = ((se.startMin - viewStart) / SLOT_INTERVAL) * ROW_HEIGHT;
-                      const heightPx = ((se.endMin - se.startMin) / SLOT_INTERVAL) * ROW_HEIGHT;
+                      const topPx = getPxFromMinutes(se.startMin);
+                      const heightPx = getPxFromMinutes(se.endMin) - topPx;
                       const isEditing = editingEntryId === se.entry.id;
                       const blockKey = `${se.entry.id}:${se.schedule.id}`;
                       const isLinkingFirst = linkingFirstBlockKey === blockKey;
@@ -1016,8 +1232,8 @@ export const TimetableGrid = memo(function TimetableGrid({
                         const displayEnd = Math.min(overlap.endMin, viewEnd);
                         if (displayStart >= displayEnd) return null;
 
-                        const topPx = ((displayStart - viewStart) / SLOT_INTERVAL) * ROW_HEIGHT;
-                        const heightPx = ((displayEnd - displayStart) / SLOT_INTERVAL) * ROW_HEIGHT;
+                        const topPx = getPxFromMinutes(displayStart);
+                        const heightPx = getPxFromMinutes(displayEnd) - topPx;
 
                         const popoverContent = (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 200 }}>

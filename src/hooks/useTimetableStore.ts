@@ -1,6 +1,6 @@
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import Database from '@tauri-apps/plugin-sql';
-import type { SubjectEntry, ConflictInfo, DayOfWeek, FormState, DynamicData } from '../types';
+import type { SubjectEntry, ConflictInfo, DayOfWeek, FormState, DynamicData, CollabAction, CollabState } from '../types';
 import { getConnectedKeys } from '../utils/linkUtils';
 
 let dbPromise: Promise<Database> | null = null;
@@ -93,6 +93,12 @@ export interface TimetableStore {
   clearImportedSuggestions: () => Promise<void>;
   theme: string;
   bandedRows: boolean;
+  columnWidths: Record<string, number>;
+  rowHeights: Record<number, number>;
+  globalColWidth: number;
+  globalRowHeight: number;
+  commitCellSizes: (newColumnWidths: Record<string, number>, newRowHeights: Record<number, number>) => void;
+  applyGlobalCellSizing: (width: number, height: number) => void;
   updateTheme: (theme: string) => Promise<void>;
   updateBandedRows: (banded: boolean) => Promise<void>;
   suggestions: {
@@ -122,7 +128,16 @@ export interface TimetableStore {
   addBlueprintsAndInstances: (blueprints: SubjectEntry[], instances: SubjectEntry[]) => void;
   mergeBlueprints: (entries: SubjectEntry[]) => { addedCount: number; updatedCount: number; skippedCount: number };
   mergeDynamicData: (entries: DynamicData[]) => { addedCount: number; skippedCount: number };
+
+  // Collaboration / Queue integration
+  applyRemoteAction: (action: CollabAction) => void;
+  getFullState: () => CollabState;
+  applyFullState: (state: CollabState) => void;
+  _persistStateToDb: () => Promise<void>;
+  setEnqueueCommit: (fn: (action: CollabAction, description: string) => void) => void;
 }
+
+export type { TimetableStore as TimetableStoreType };
 
 interface HistorySnapshot {
   blueprints: SubjectEntry[];
@@ -130,6 +145,10 @@ interface HistorySnapshot {
   editingEntryId: string | null;
   formState: FormState;
   dynamicData: DynamicData[];
+  columnWidths: Record<string, number>;
+  rowHeights: Record<number, number>;
+  globalColWidth: number;
+  globalRowHeight: number;
 }
 
 function migrateEntries(parsed: unknown): { blueprints: SubjectEntry[]; instances: SubjectEntry[] } {
@@ -196,6 +215,58 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     window.dispatchEvent(new CustomEvent('store:dirty-change', { detail: { isDirty: dirty } }));
   }, []);
 
+  const [columnWidths, setColumnWidthsState] = useState<Record<string, number>>(() => {
+    try {
+      const saved = localStorage.getItem('timetable_column_widths');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const columnWidthsRef = useRef(columnWidths);
+  columnWidthsRef.current = columnWidths;
+
+  const [rowHeights, setRowHeightsState] = useState<Record<number, number>>(() => {
+    try {
+      const saved = localStorage.getItem('timetable_row_heights');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+  const rowHeightsRef = useRef(rowHeights);
+  rowHeightsRef.current = rowHeights;
+
+  const [globalColWidth, setGlobalColWidthState] = useState<number>(() => {
+    const saved = localStorage.getItem('timetable_global_col_width');
+    return saved ? parseInt(saved, 10) : 130;
+  });
+  const globalColWidthRef = useRef(globalColWidth);
+  globalColWidthRef.current = globalColWidth;
+
+  const [globalRowHeight, setGlobalRowHeightState] = useState<number>(() => {
+    const saved = localStorage.getItem('timetable_global_row_height');
+    return saved ? parseInt(saved, 10) : 36;
+  });
+  const globalRowHeightRef = useRef(globalRowHeight);
+  globalRowHeightRef.current = globalRowHeight;
+
+  // Refs for queue/collab persistence (always-current snapshots)
+  const blueprintsRef = useRef(blueprints);
+  blueprintsRef.current = blueprints;
+  const instancesRef = useRef(instances);
+  instancesRef.current = instances;
+  const hiddenDaysRef = useRef(hiddenDays);
+  hiddenDaysRef.current = hiddenDays;
+  const themeRef = useRef(theme);
+  themeRef.current = theme;
+  const bandedRowsRef = useRef(bandedRows);
+  bandedRowsRef.current = bandedRows;
+  const filePathRef = useRef(filePath);
+  filePathRef.current = filePath;
+  const dynamicDataRef = useRef(dynamicData);
+  dynamicDataRef.current = dynamicData;
+
   const lastSavedJsonRef = useRef<string>('');
   const lastSavedHiddenDaysRef = useRef<string>('');
 
@@ -253,7 +324,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     );
   }, [dynamicData]);
 
-  const addDynamicData = useCallback(async (dataType: string, value: string, displayAs: string) => {
+  const addDynamicData = useCallback(async (dataType: string, value: string, displayAs: string, _source: 'local' | 'remote' = 'local') => {
     if (dataType === 'room' && isDuplicateRoom(value, displayAs, null)) {
       const building = displayAs.split('|')[1] || '';
       throw new Error(`Room "${value}" already exists in building "${building || '(none)'}".`);
@@ -268,7 +339,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     setIsDirtyAndDispatch(true);
   }, [timetableId, isDuplicateRoom, setIsDirtyAndDispatch]);
 
-  const addLinksBatched = useCallback(async (links: Array<{ childKey: string; parentKey: string }>) => {
+  const addLinksBatched = useCallback(async (links: Array<{ childKey: string; parentKey: string }>, _source: 'local' | 'remote' = 'local') => {
     if (links.length === 0) return;
     const db = await getDb();
     const values: string[] = [];
@@ -293,14 +364,14 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     setIsDirtyAndDispatch(true);
   }, [timetableId, setIsDirtyAndDispatch]);
 
-  const deleteDynamicData = useCallback(async (id: string) => {
+  const deleteDynamicData = useCallback(async (id: string, _source: 'local' | 'remote' = 'local') => {
     const db = await getDb();
     await db.execute('DELETE FROM dynamic_data WHERE id = $1', [id]);
     setDynamicData((prev) => prev.filter((item) => item.id !== id));
     setIsDirtyAndDispatch(true);
   }, [setIsDirtyAndDispatch]);
 
-  const updateDynamicData = useCallback(async (id: string, dataType: string, value: string, displayAs: string) => {
+  const updateDynamicData = useCallback(async (id: string, dataType: string, value: string, displayAs: string, _source: 'local' | 'remote' = 'local') => {
     if (dataType === 'room' && isDuplicateRoom(value, displayAs, id)) {
       const building = displayAs.split('|')[1] || '';
       throw new Error(`Room "${value}" already exists in building "${building || '(none)'}".`);
@@ -319,6 +390,101 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const markSaved = useCallback(() => {
     setIsDirtyAndDispatch(false);
   }, [setIsDirtyAndDispatch]);
+
+  // ── Queue / Collaboration integration ──
+
+  const enqueueCommitRef = useRef<(action: CollabAction, description: string) => void>(undefined);
+
+  const setEnqueueCommit = useCallback((fn: (action: CollabAction, description: string) => void) => {
+    enqueueCommitRef.current = fn;
+  }, []);
+
+  const _persistStateToDb = useCallback(async () => {
+    const combinedJson = JSON.stringify({ blueprints: blueprintsRef.current, instances: instancesRef.current });
+    const hiddenDaysJson = JSON.stringify(hiddenDaysRef.current);
+    const now = new Date().toISOString();
+    const totalCount = blueprintsRef.current.length + instancesRef.current.length;
+    try {
+      const db = await getDb();
+      await db.execute(
+        'UPDATE timetables SET entries_json = $1, entry_count = $2, updated_at = $3, hidden_days = $4 WHERE id = $5',
+        [combinedJson, totalCount, now, hiddenDaysJson, timetableId],
+      );
+    } catch (e: unknown) {
+      console.error('Failed to persist state to DB:', e);
+    }
+  }, [timetableId]);
+
+  const getFullState = useCallback((): CollabState => {
+    return {
+      blueprints: blueprintsRef.current,
+      instances: instancesRef.current,
+      dynamicData: dynamicDataRef.current,
+      hiddenDays: hiddenDaysRef.current,
+      theme: themeRef.current,
+      bandedRows: bandedRowsRef.current,
+      filePath: filePathRef.current,
+    };
+  }, []);
+
+  const applyFullState = useCallback((state: CollabState) => {
+    setBlueprints(state.blueprints);
+    setInstances(state.instances);
+    setDynamicData(state.dynamicData);
+    setHiddenDaysState(state.hiddenDays);
+    setThemeState(state.theme);
+    setBandedRowsState(state.bandedRows);
+    setFilePathState(state.filePath);
+
+    const combinedJson = JSON.stringify({ blueprints: state.blueprints, instances: state.instances });
+    lastSavedJsonRef.current = combinedJson;
+    lastSavedHiddenDaysRef.current = JSON.stringify(state.hiddenDays);
+  }, []);
+
+  const applyRemoteAction = useCallback((action: CollabAction) => {
+    // Route remote actions to the appropriate store method with source='remote'
+    switch (action.op) {
+      case 'addBlueprint':
+        addBlueprint(action.payload.entry as SubjectEntry, 'remote');
+        break;
+      case 'addInstance':
+        addInstance(action.payload.entry as SubjectEntry, 'remote');
+        break;
+      case 'addInstances':
+        addInstances(action.payload.entries as SubjectEntry[], 'remote');
+        break;
+      case 'updateInstance':
+        updateInstance(action.payload.entry as SubjectEntry, action.payload.editedScheduleId as string | undefined, 'remote');
+        break;
+      case 'deleteBlueprint':
+        deleteBlueprint(action.payload.id as string, 'remote');
+        break;
+      case 'deleteBlueprints':
+        deleteBlueprints(action.payload.ids as string[], 'remote');
+        break;
+      case 'deleteInstance':
+        deleteInstance(action.payload.id as string, 'remote');
+        break;
+      case 'setHiddenDays':
+        setHiddenDays(action.payload.days as DayOfWeek[], 'remote');
+        break;
+      case 'addDynamicData':
+        addDynamicData(action.payload.dataType as string, action.payload.value as string, action.payload.displayAs as string, 'remote');
+        break;
+      case 'deleteDynamicData':
+        deleteDynamicData(action.payload.id as string, 'remote');
+        break;
+      case 'updateDynamicData':
+        updateDynamicData(action.payload.id as string, action.payload.dataType as string, action.payload.value as string, action.payload.displayAs as string, 'remote');
+        break;
+      case 'addBlueprints':
+        addBlueprints(action.payload.entries as SubjectEntry[], 'remote');
+        break;
+      case 'addBlueprintsAndInstances':
+        addBlueprintsAndInstances(action.payload.blueprints as SubjectEntry[], action.payload.instances as SubjectEntry[], 'remote');
+        break;
+    }
+  }, []);
 
   // Load from DB on mount
   useEffect(() => {
@@ -357,6 +523,10 @@ export function useTimetableStore(timetableId: string): TimetableStore {
             editingEntryId: null,
             formState: DEFAULT_FORM_STATE,
             dynamicData,
+            columnWidths: columnWidthsRef.current,
+            rowHeights: rowHeightsRef.current,
+            globalColWidth: globalColWidthRef.current,
+            globalRowHeight: globalRowHeightRef.current,
           }];
           historyIndexRef.current = 0;
           updateHistoryState();
@@ -372,6 +542,10 @@ export function useTimetableStore(timetableId: string): TimetableStore {
             editingEntryId: null,
             formState: DEFAULT_FORM_STATE,
             dynamicData,
+            columnWidths: columnWidthsRef.current,
+            rowHeights: rowHeightsRef.current,
+            globalColWidth: globalColWidthRef.current,
+            globalRowHeight: globalRowHeightRef.current,
           }];
           historyIndexRef.current = 0;
           updateHistoryState();
@@ -405,16 +579,31 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       newEditingEntryId: string | null,
       newFormState: FormState,
       isUndoRedoOperation = false,
-      newHiddenDays = hiddenDays
+      newHiddenDays = hiddenDays,
+      newColumnWidths: Record<string, number> = columnWidthsRef.current,
+      newRowHeights: Record<number, number> = rowHeightsRef.current,
+      newGlobalColWidth: number = globalColWidthRef.current,
+      newGlobalRowHeight: number = globalRowHeightRef.current,
+      source: 'local' | 'remote' = 'local'
     ): void => {
       setBlueprints(newBlueprints);
       setInstances(newInstances);
       setEditingEntryIdState(newEditingEntryId);
       setFormStateState(newFormState);
       setHiddenDaysState(newHiddenDays);
+      setColumnWidthsState(newColumnWidths);
+      setRowHeightsState(newRowHeights);
+      setGlobalColWidthState(newGlobalColWidth);
+      setGlobalRowHeightState(newGlobalRowHeight);
+
+      localStorage.setItem('timetable_column_widths', JSON.stringify(newColumnWidths));
+      localStorage.setItem('timetable_row_heights', JSON.stringify(newRowHeights));
+      localStorage.setItem('timetable_global_col_width', String(newGlobalColWidth));
+      localStorage.setItem('timetable_global_row_height', String(newGlobalRowHeight));
+
       setIsDirtyAndDispatch(true);
 
-      if (!isUndoRedoOperation) {
+      if (!isUndoRedoOperation && source === 'local') {
         const newHistory = historyRef.current.slice(0, historyIndexRef.current + 1);
         newHistory.push({
           blueprints: newBlueprints,
@@ -422,6 +611,10 @@ export function useTimetableStore(timetableId: string): TimetableStore {
           editingEntryId: newEditingEntryId,
           formState: newFormState,
           dynamicData,
+          columnWidths: newColumnWidths,
+          rowHeights: newRowHeights,
+          globalColWidth: newGlobalColWidth,
+          globalRowHeight: newGlobalRowHeight
         });
         historyRef.current = newHistory;
         historyIndexRef.current = newHistory.length - 1;
@@ -431,51 +624,47 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       const combinedJson = JSON.stringify({ blueprints: newBlueprints, instances: newInstances });
       const hiddenDaysJson = JSON.stringify(newHiddenDays);
 
-      const entriesChanged = combinedJson !== lastSavedJsonRef.current;
-      const hiddenDaysChanged = hiddenDaysJson !== lastSavedHiddenDaysRef.current;
-
-      if (entriesChanged || hiddenDaysChanged) {
+      if (combinedJson !== lastSavedJsonRef.current || hiddenDaysJson !== lastSavedHiddenDaysRef.current) {
         lastSavedJsonRef.current = combinedJson;
         lastSavedHiddenDaysRef.current = hiddenDaysJson;
-
-        const now = new Date().toISOString();
-        const totalCount = newBlueprints.length + newInstances.length;
-        getDb()
-          .then((db) =>
-            db.execute(
-              'UPDATE timetables SET entries_json = $1, entry_count = $2, updated_at = $3, hidden_days = $4 WHERE id = $5',
-              [combinedJson, totalCount, now, hiddenDaysJson, timetableId],
-            ),
-          )
-          .catch((e: unknown) => console.error('Failed to save timetable:', e));
       }
     },
     [timetableId, hiddenDays, updateHistoryState, dynamicData, setIsDirtyAndDispatch]
   );
 
-  const addBlueprints = useCallback((entries: SubjectEntry[]): void => {
+  const addBlueprints = useCallback((entries: SubjectEntry[], source: 'local' | 'remote' = 'local'): void => {
     const nextBlueprints = [...entries, ...blueprints];
-    commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE);
-  }, [blueprints, instances, commitState]);
+    commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+    if (source === 'local' && enqueueCommitRef.current) {
+      enqueueCommitRef.current({ op: 'addBlueprints', payload: { entries } }, `Added ${entries.length} blueprint(s)`);
+    }
+  }, [blueprints, instances, commitState, hiddenDays]);
 
-  const addBlueprintsAndInstances = useCallback((newBps: SubjectEntry[], newInsts: SubjectEntry[]): void => {
+  const addBlueprintsAndInstances = useCallback((newBps: SubjectEntry[], newInsts: SubjectEntry[], source: 'local' | 'remote' = 'local'): void => {
     const nextBlueprints = [...newBps, ...blueprints];
     const nextInstances = [...newInsts, ...instances];
-    commitState(nextBlueprints, nextInstances, null, DEFAULT_FORM_STATE);
-  }, [blueprints, instances, commitState]);
+    commitState(nextBlueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+    if (source === 'local' && enqueueCommitRef.current) {
+      const count = newBps.length + newInsts.length;
+      enqueueCommitRef.current({ op: 'addBlueprintsAndInstances', payload: { blueprints: newBps, instances: newInsts } }, `Added ${count} entry(ies)`);
+    }
+  }, [blueprints, instances, commitState, hiddenDays]);
 
   const persistState = useCallback(
-    (newBlueprints: SubjectEntry[], newInstances: SubjectEntry[], isUndoRedoOperation = false): void => {
-      commitState(newBlueprints, newInstances, editingEntryId, formState, isUndoRedoOperation, hiddenDays);
+    (newBlueprints: SubjectEntry[], newInstances: SubjectEntry[], isUndoRedoOperation = false, source: 'local' | 'remote' = 'local'): void => {
+      commitState(newBlueprints, newInstances, editingEntryId, formState, isUndoRedoOperation, hiddenDays, undefined, undefined, undefined, undefined, source);
     },
     [commitState, editingEntryId, formState, hiddenDays],
   );
 
   const setHiddenDays = useCallback(
-    (_days: DayOfWeek[]): void => {
-      persistState(blueprints, instances);
+    (_days: DayOfWeek[], source: 'local' | 'remote' = 'local'): void => {
+      commitState(blueprints, instances, editingEntryId, formState, false, _days, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        enqueueCommitRef.current({ op: 'setHiddenDays', payload: { days: _days } }, `Updated hidden days`);
+      }
     },
-    [blueprints, instances, persistState],
+    [blueprints, instances, editingEntryId, formState, commitState],
   );
 
   const updateFilePath = useCallback(
@@ -538,37 +727,46 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   );
 
   const addBlueprint = useCallback(
-    (entry: SubjectEntry): ConflictInfo[] => {
+    (entry: SubjectEntry, source: 'local' | 'remote' = 'local'): ConflictInfo[] => {
       const existing = blueprints.find((e) => e.id === entry.id);
       const nextBlueprints = existing
         ? blueprints.map((e) => (e.id === entry.id ? entry : e))
         : [entry, ...blueprints];
-      commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE);
+      commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        enqueueCommitRef.current({ op: 'addBlueprint', payload: { entry } }, `Added blueprint ${entry.subjectCode}`);
+      }
       return [];
     },
-    [blueprints, instances, commitState],
+    [blueprints, instances, commitState, hiddenDays],
   );
 
   const addInstance = useCallback(
-    (entry: SubjectEntry): ConflictInfo[] => {
+    (entry: SubjectEntry, source: 'local' | 'remote' = 'local'): ConflictInfo[] => {
       const nextInstances = [entry, ...instances];
-      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE);
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        enqueueCommitRef.current({ op: 'addInstance', payload: { entry } }, `Added instance ${entry.subjectCode}`);
+      }
       return detectConflicts(entry, nextInstances);
     },
-    [blueprints, instances, commitState, detectConflicts],
+    [blueprints, instances, commitState, detectConflicts, hiddenDays],
   );
 
   const addInstances = useCallback(
-    (entries: SubjectEntry[]): ConflictInfo[][] => {
+    (entries: SubjectEntry[], source: 'local' | 'remote' = 'local'): ConflictInfo[][] => {
       const nextInstances = [...entries, ...instances];
-      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE);
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        enqueueCommitRef.current({ op: 'addInstances', payload: { entries } }, `Added ${entries.length} instance(s)`);
+      }
       return entries.map((entry) => detectConflicts(entry, nextInstances));
     },
-    [blueprints, instances, commitState, detectConflicts],
+    [blueprints, instances, commitState, detectConflicts, hiddenDays],
   );
 
   const updateInstance = useCallback(
-    (entry: SubjectEntry, editedScheduleId?: string): ConflictInfo[] => {
+    (entry: SubjectEntry, editedScheduleId?: string, source: 'local' | 'remote' = 'local'): ConflictInfo[] => {
       let nextInstances = instances.map((e) => (e.id === entry.id ? entry : e));
 
       const links = new Map<string, string>();
@@ -631,20 +829,22 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         });
       }
 
-      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE);
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        enqueueCommitRef.current({ op: 'updateInstance', payload: { entry, editedScheduleId } }, `Updated instance ${entry.subjectCode}`);
+      }
       return detectConflicts(entry, nextInstances);
     },
-    [blueprints, instances, commitState, detectConflicts, dynamicData],
+    [blueprints, instances, commitState, detectConflicts, dynamicData, hiddenDays],
   );
 
   const deleteBlueprint = useCallback(
-    (id: string): void => {
+    (id: string, source: 'local' | 'remote' = 'local'): void => {
       const nextBlueprints = blueprints.filter((e) => e.id !== id);
       const nextInstances = instances.filter((e) => e.blueprintId !== id);
       const nextEditingEntryId = editingEntryId === id ? null : editingEntryId;
       const nextFormState = editingEntryId === id ? DEFAULT_FORM_STATE : formState;
 
-      // Clean up links involving the deleted instances
       const deletedInstanceIds = new Set(
         instances.filter((e) => e.blueprintId === id).map((e) => e.id)
       );
@@ -658,20 +858,23 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         void deleteDynamicData(link.id);
       }
 
-      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState);
+      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        const entry = blueprints.find((e) => e.id === id);
+        enqueueCommitRef.current({ op: 'deleteBlueprint', payload: { id } }, `Deleted blueprint ${entry?.subjectCode || id}`);
+      }
     },
-    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData],
+    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData, hiddenDays],
   );
 
   const deleteBlueprints = useCallback(
-    (ids: string[]): void => {
+    (ids: string[], source: 'local' | 'remote' = 'local'): void => {
       const idsSet = new Set(ids);
       const nextBlueprints = blueprints.filter((e) => !idsSet.has(e.id));
       const nextInstances = instances.filter((e) => !e.blueprintId || !idsSet.has(e.blueprintId));
       const nextEditingEntryId = idsSet.has(editingEntryId || '') ? null : editingEntryId;
       const nextFormState = idsSet.has(editingEntryId || '') ? DEFAULT_FORM_STATE : formState;
 
-      // Clean up links involving the deleted instances
       const deletedInstanceIds = new Set(
         instances.filter((e) => e.blueprintId && idsSet.has(e.blueprintId)).map((e) => e.id)
       );
@@ -685,13 +888,16 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         void deleteDynamicData(link.id);
       }
 
-      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState);
+      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        enqueueCommitRef.current({ op: 'deleteBlueprints', payload: { ids } }, `Deleted ${ids.length} blueprint(s)`);
+      }
     },
-    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData],
+    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData, hiddenDays],
   );
 
   const deleteInstance = useCallback(
-    (id: string): void => {
+    (id: string, source: 'local' | 'remote' = 'local'): void => {
       const nextInstances = instances.filter((e) => e.id !== id);
       const nextEditingEntryId = editingEntryId === id ? null : editingEntryId;
       const nextFormState = editingEntryId === id ? DEFAULT_FORM_STATE : formState;
@@ -703,9 +909,13 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         deleteDynamicData(link.id);
       }
 
-      commitState(blueprints, nextInstances, nextEditingEntryId, nextFormState);
+      commitState(blueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      if (source === 'local' && enqueueCommitRef.current) {
+        const entry = instances.find((e) => e.id === id);
+        enqueueCommitRef.current({ op: 'deleteInstance', payload: { id } }, `Deleted instance ${entry?.subjectCode || id}`);
+      }
     },
-    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData],
+    [blueprints, instances, editingEntryId, formState, commitState, dynamicData, deleteDynamicData, hiddenDays],
   );
 
   const exportEntries = useCallback((): string => {
@@ -1079,7 +1289,19 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       const oldState = historyRef.current[historyIndexRef.current];
       historyIndexRef.current -= 1;
       const newState = historyRef.current[historyIndexRef.current];
-      commitState(newState.blueprints, newState.instances, newState.editingEntryId, newState.formState, true);
+      commitState(
+        newState.blueprints,
+        newState.instances,
+        newState.editingEntryId,
+        newState.formState,
+        true,
+        hiddenDays,
+        newState.columnWidths,
+        newState.rowHeights,
+        newState.globalColWidth,
+        newState.globalRowHeight,
+        'local'
+      );
       setDynamicData(newState.dynamicData);
       void syncDynamicData(newState.dynamicData);
       updateHistoryState();
@@ -1089,15 +1311,34 @@ export function useTimetableStore(timetableId: string): TimetableStore {
           detail: { oldState, newState },
         })
       );
+
+      // Record undo in commit history
+      if (enqueueCommitRef.current) {
+        enqueueCommitRef.current(
+          { op: 'undo', payload: { oldState, newState } },
+          `Undo: reverted to previous state`
+        );
+      }
     }
-  }, [commitState, syncDynamicData, updateHistoryState]);
+  }, [commitState, syncDynamicData, updateHistoryState, hiddenDays]);
 
   const redo = useCallback((): void => {
     if (historyIndexRef.current < historyRef.current.length - 1) {
       const oldState = historyRef.current[historyIndexRef.current];
       historyIndexRef.current += 1;
       const newState = historyRef.current[historyIndexRef.current];
-      commitState(newState.blueprints, newState.instances, newState.editingEntryId, newState.formState, true);
+      commitState(
+        newState.blueprints,
+        newState.instances,
+        newState.editingEntryId,
+        newState.formState,
+        true,
+        hiddenDays,
+        newState.columnWidths,
+        newState.rowHeights,
+        newState.globalColWidth,
+        newState.globalRowHeight
+      );
       setDynamicData(newState.dynamicData);
       void syncDynamicData(newState.dynamicData);
       updateHistoryState();
@@ -1108,12 +1349,32 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         })
       );
     }
-  }, [commitState, syncDynamicData, updateHistoryState]);
+  }, [commitState, syncDynamicData, updateHistoryState, hiddenDays]);
+
+  const commitCellSizes = useCallback((newColumnWidths: Record<string, number>, newRowHeights: Record<number, number>) => {
+    columnWidthsRef.current = newColumnWidths;
+    rowHeightsRef.current = newRowHeights;
+    commitState(blueprints, instances, editingEntryId, formState, false, hiddenDays, newColumnWidths, newRowHeights);
+  }, [blueprints, instances, editingEntryId, formState, hiddenDays, commitState]);
+
+  const applyGlobalCellSizing = useCallback((width: number, height: number) => {
+    globalColWidthRef.current = width;
+    globalRowHeightRef.current = height;
+    columnWidthsRef.current = {};
+    rowHeightsRef.current = {};
+    commitState(blueprints, instances, editingEntryId, formState, false, hiddenDays, {}, {}, width, height);
+  }, [blueprints, instances, editingEntryId, formState, hiddenDays, commitState]);
 
   return {
     blueprints,
     instances,
     hiddenDays,
+    columnWidths,
+    rowHeights,
+    globalColWidth,
+    globalRowHeight,
+    commitCellSizes,
+    applyGlobalCellSizing,
     isLoading,
     filePath,
     updateFilePath,
@@ -1158,5 +1419,12 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     addBlueprintsAndInstances,
     mergeBlueprints,
     mergeDynamicData,
+
+    // Collaboration / Queue
+    applyRemoteAction,
+    getFullState,
+    applyFullState,
+    _persistStateToDb,
+    setEnqueueCommit,
   };
 }

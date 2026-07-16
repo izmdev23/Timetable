@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
+import { Modal, List, Button } from 'antd';
 import { HomePage } from './pages/HomePage';
 import { TimetablePage } from './pages/TimetablePage';
 import { PreferencesPage } from './pages/PreferencesPage';
 import { TitleBar } from './components/TitleBar';
 import { PreferencesProvider } from './context/PreferencesContext';
 import { CollectionProvider, useCollection } from './hooks/useCollectionContext';
-import type { TimetableMeta } from './types';
+import type { TimetableMeta, CollabUser, ConnectionQuality, PermissionSet } from './types';
 import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -66,6 +67,60 @@ function AppInner() {
   const [exportExcelRoomTrigger, setExportExcelRoomTrigger] = useState(0);
   const [importExcelTrigger, setImportExcelTrigger] = useState(0);
 
+  // DOCX template state and QoL recent template lists
+  const [docxTemplate, setDocxTemplate] = useState<{ name: string; path: string; bytes: Uint8Array } | null>(null);
+  const [exportDocxModalOpen, setExportDocxModalOpen] = useState(false);
+  const [recentTemplates, setRecentTemplates] = useState<{ name: string; path: string }[]>([]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('recent_docx_templates');
+      if (saved) {
+        setRecentTemplates(JSON.parse(saved));
+      }
+    } catch (e) {
+      console.error('Failed to load recent templates', e);
+    }
+  }, [exportDocxModalOpen]);
+
+  async function loadTemplateFromPath(path: string) {
+    try {
+      const bytes = await invoke<number[]>('read_file_bytes', { path });
+      const name = path.split(/[\\/]/).pop() || 'template.docx';
+      
+      const newTemplate = { name, path, bytes: new Uint8Array(bytes) };
+      setDocxTemplate(newTemplate);
+      setExportDocxModalOpen(false);
+
+      // Add to recent templates in localStorage
+      let updated = [{ name, path }, ...recentTemplates.filter(t => t.path !== path)];
+      updated = updated.slice(0, 3);
+      localStorage.setItem('recent_docx_templates', JSON.stringify(updated));
+      setRecentTemplates(updated);
+    } catch (err: unknown) {
+      const { message: showMessage } = await import('@tauri-apps/plugin-dialog');
+      await showMessage(`Failed to read template: ${err instanceof Error ? err.message : String(err)}`, { title: 'Error', kind: 'error' });
+    }
+  }
+
+  async function handleBrowseTemplate() {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({
+        title: 'Select Word Template',
+        filters: [{ name: 'Word Documents', extensions: ['docx'] }],
+        multiple: false,
+        directory: false,
+      });
+      if (selected && typeof selected === 'string') {
+        await loadTemplateFromPath(selected);
+      }
+    } catch (err: unknown) {
+      const { message: showMessage } = await import('@tauri-apps/plugin-dialog');
+      await showMessage(`Error choosing template: ${err instanceof Error ? err.message : String(err)}`, { title: 'Error', kind: 'error' });
+    }
+  }
+
   // Stable refs so the keydown handler doesn't close over stale state
   const pageRef = useRef(page);
   const openTimetableRef = useRef<((meta: TimetableMeta) => void) | null>(null);
@@ -115,6 +170,45 @@ function AppInner() {
       window.removeEventListener('store:history-change', handleHistoryChange);
       window.removeEventListener('store:dirty-change', handleDirtyChange);
     };
+  }, []);
+
+  // ── Collaboration State (from TimetablePage events) ──
+
+  const [collabConnected, setCollabConnected] = useState(false);
+  const [collabUsers, setCollabUsers] = useState<CollabUser[]>([]);
+  const [collabQuality, setCollabQuality] = useState<ConnectionQuality>('disconnected');
+  const [collabLatency, setCollabLatency] = useState(0);
+  const [collabMyName, setCollabMyName] = useState('');
+  const [collabMyColor, setCollabMyColor] = useState('#61AFEF');
+  const [collabSessionInfo, setCollabSessionInfo] = useState<{ ip: string; port: number } | null>(null);
+  const [collabShareHistory, setCollabShareHistory] = useState(false);
+  const [collabIsHost, setCollabIsHost] = useState(false);
+
+  const collabCallbacksRef = useRef<{
+    onSetPermission: (clientId: string, perms: PermissionSet) => void;
+    onLeaveSession: () => void;
+    onShareFullHistoryChange: (v: boolean) => void;
+  }>({ onSetPermission: () => {}, onLeaveSession: () => {}, onShareFullHistoryChange: () => {} });
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail) return;
+      setCollabConnected(detail.isConnected);
+      setCollabUsers(detail.connectedUsers || []);
+      setCollabQuality(detail.connectionQuality || 'disconnected');
+      setCollabLatency(detail.latency || 0);
+      setCollabMyName(detail.myUserName || '');
+      setCollabMyColor(detail.myColor || '#61AFEF');
+      setCollabSessionInfo(detail.sessionInfo || null);
+      setCollabShareHistory(detail.shareFullHistory || false);
+      setCollabIsHost(detail.isHost || false);
+      if (detail.onSetPermission) collabCallbacksRef.current.onSetPermission = detail.onSetPermission;
+      if (detail.onLeaveSession) collabCallbacksRef.current.onLeaveSession = detail.onLeaveSession;
+      if (detail.onShareFullHistoryChange) collabCallbacksRef.current.onShareFullHistoryChange = detail.onShareFullHistoryChange;
+    };
+    window.addEventListener('collab:state-change', handler);
+    return () => window.removeEventListener('collab:state-change', handler);
   }, []);
 
   // Listen for window close request from TitleBar (red X button)
@@ -219,6 +313,7 @@ function AppInner() {
         onSave={() => setSaveTrigger((n) => n + 1)}
         onExportJson={() => setExportJsonTrigger((n) => n + 1)}
         onExportExcelRoom={() => setExportExcelRoomTrigger((n) => n + 1)}
+        onExportDocx={() => setExportDocxModalOpen(true)}
         onImportMerge={() => setImportMergeTrigger((n) => n + 1)}
         onImportExcel={() => setImportExcelTrigger((n) => n + 1)}
         onOpenPreferences={() => setPage('preferences')}
@@ -226,6 +321,19 @@ function AppInner() {
         canRedo={canRedo}
         onUndo={() => window.dispatchEvent(new CustomEvent('titlebar:undo'))}
         onRedo={() => window.dispatchEvent(new CustomEvent('titlebar:redo'))}
+
+        collabConnected={collabConnected}
+        collabUsers={collabUsers}
+        collabQuality={collabQuality}
+        collabLatency={collabLatency}
+        collabMyName={collabMyName}
+        collabMyColor={collabMyColor}
+        collabSessionInfo={collabSessionInfo}
+        collabShareHistory={collabShareHistory}
+        collabIsHost={collabIsHost}
+        onCollabSetPermission={collabCallbacksRef.current.onSetPermission}
+        onCollabLeaveSession={collabCallbacksRef.current.onLeaveSession}
+        onCollabShareHistoryChange={collabCallbacksRef.current.onShareFullHistoryChange}
       />
 
       <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
@@ -243,6 +351,8 @@ function AppInner() {
             exportJsonTrigger={exportJsonTrigger}
             exportExcelRoomTrigger={exportExcelRoomTrigger}
             importExcelTrigger={importExcelTrigger}
+            docxTemplate={docxTemplate}
+            onClearDocxTemplate={() => setDocxTemplate(null)}
           />
         )}
         {page === 'preferences' && (
@@ -268,6 +378,61 @@ function AppInner() {
           }}
         />
       )}
+
+      {/* ── Export DOCX Template Selector Modal ── */}
+      <Modal
+        title="Export Timetable using Word (DOCX) Template"
+        open={exportDocxModalOpen}
+        onCancel={() => setExportDocxModalOpen(false)}
+        footer={[
+          <Button key="cancel" onClick={() => setExportDocxModalOpen(false)}>
+            Cancel
+          </Button>,
+          <Button
+            key="browse"
+            type="primary"
+            onClick={handleBrowseTemplate}
+            style={{ background: '#3D6B50', borderColor: '#3D6B50' }}
+          >
+            Use Template (Browse)...
+          </Button>
+        ]}
+        width={500}
+      >
+        <div style={{ marginBottom: 16, fontSize: 13, color: '#555' }}>
+          Select an existing Word document (.docx) template. You can visually select a position on any page to paste the timetable image.
+        </div>
+        {recentTemplates.length > 0 && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontWeight: 600, marginBottom: 8, color: '#3D6B50', fontSize: 12 }}>
+              Recent Templates:
+            </div>
+            <List
+              dataSource={recentTemplates}
+              size="small"
+              bordered
+              renderItem={(item) => (
+                <List.Item
+                  actions={[
+                    <Button
+                      type="link"
+                      onClick={() => loadTemplateFromPath(item.path)}
+                      style={{ color: '#3D6B50', padding: 0 }}
+                    >
+                      Use Template
+                    </Button>
+                  ]}
+                >
+                  <List.Item.Meta
+                    title={<span style={{ fontSize: 13, fontWeight: 500 }}>{item.name}</span>}
+                    description={<span style={{ fontSize: 11, color: '#888', wordBreak: 'break-all' }}>{item.path}</span>}
+                  />
+                </List.Item>
+              )}
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

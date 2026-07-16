@@ -12,7 +12,10 @@ import * as ExcelJS from 'exceljs';
 import { usePreferences } from '../context/PreferencesContext';
 import { save, ask, open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
-import type { SubjectEntry, DayOfWeek, ConflictInfo, Schedule, DynamicData } from '../types';
+import type { SubjectEntry, DayOfWeek, ConflictInfo, Schedule, DynamicData, CollabAction } from '../types';
+import { DocxTemplatePreview } from '../components/DocxTemplatePreview';
+import { exportToDocxTemplate } from '../utils/exportDocx';
+import { toPng } from 'html-to-image';
 
 import { RibbonToolbar } from '../components/RibbonToolbar';
 import { PlacedSchedules } from '../components/PlacedSchedules';
@@ -25,6 +28,13 @@ import { resolveRoomForSchedule } from '../utils/conflictResolver';
 import { StatusBar } from '../components/StatusBar';
 import { useBlueprintSearch } from '../hooks/useBlueprintSearch';
 import { useCollection } from '../hooks/useCollectionContext';
+import { useCommitQueue } from '../hooks/useCommitQueue';
+import { useCommitHistory } from '../hooks/useCommitHistory';
+import { useCollaboration } from '../hooks/useCollaboration';
+import { RightPanelTabs } from '../components/RightPanelTabs';
+import { CommitHistorySidebar } from '../components/CommitHistorySidebar';
+import { CollabSetupModals } from '../components/CollabSetupModals';
+import { hashColor } from '../utils/userColors';
 
 const { Content } = Layout;
 const { Text } = Typography;
@@ -48,6 +58,10 @@ interface TimetablePageProps {
   exportExcelRoomTrigger: number;
   /** Incremented when File > Import Blueprints from Excel is triggered */
   importExcelTrigger: number;
+  /** Word/Docx Template Details */
+  docxTemplate: { name: string; path: string; bytes: Uint8Array } | null;
+  /** Callback to clear Word template */
+  onClearDocxTemplate: () => void;
 }
 
 function toMin(time: string): number {
@@ -121,13 +135,94 @@ function filterEntriesForExport(
  * Full timetable editor page.
  * Loads entries and hidden days from SQLite via the store hook and persists on every mutation.
  */
-export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exportTrigger, saveTrigger, importMergeTrigger, exportJsonTrigger, exportExcelRoomTrigger, importExcelTrigger }: TimetablePageProps) {
+export function TimetablePage({
+  timetableId,
+  timetableName,
+  onBack: _onBack,
+  exportTrigger,
+  saveTrigger,
+  importMergeTrigger,
+  exportJsonTrigger,
+  exportExcelRoomTrigger,
+  importExcelTrigger,
+  docxTemplate,
+  onClearDocxTemplate
+}: TimetablePageProps) {
   const store = useTimetableStore(timetableId);
   const collection = useCollection();
   const prefs = usePreferences();
   const [messageApi, contextHolder] = message.useMessage();
   const [notificationApi, notificationContextHolder] = notification.useNotification();
   const [statusMessage, setStatusMessage] = useState('');
+
+  // ── Collaboration & Commit History Hooks ──
+
+  const commitHistory = useCommitHistory(timetableId);
+  const collabRef = useRef<ReturnType<typeof useCollaboration>>(null!);
+  const myNameRef = useRef('local');
+  const myIdRef = useRef('local');
+
+  const commitQueue = useCommitQueue({
+    onProcessed: useCallback(async (commit) => {
+      await store._persistStateToDb();
+      await commitHistory.addCommit({
+        id: commit.id,
+        timetableId,
+        actionType: commit.action.op,
+        actionJson: JSON.stringify(commit.action),
+        description: commit.description,
+        author: myNameRef.current,
+        authorId: myIdRef.current,
+        timestamp: commit.timestamp,
+        isUndo: commit.action.op === 'undo',
+        undoneCommitId: null,
+      });
+      if (collabRef.current?.isConnected) {
+        collabRef.current.broadcastAction(commit.action);
+      }
+    }, [store, commitHistory, timetableId]),
+  });
+
+  useEffect(() => {
+    store.setEnqueueCommit((action: CollabAction, description: string) => {
+      commitQueue.enqueueCommit(action, description);
+    });
+  }, [store, commitQueue]);
+
+  const collab = useCollaboration(
+    store.applyRemoteAction,
+    store.getFullState,
+    store.applyFullState,
+    commitHistory.addCommit,
+    commitHistory.getCommitsSince,
+  );
+
+  collabRef.current = collab;
+  myNameRef.current = collab.myUserName || 'local';
+  myIdRef.current = collab.clientId || 'local';
+
+  const [hostModalOpen, setHostModalOpen] = useState(false);
+  const [joinModalOpen, setJoinModalOpen] = useState(false);
+  const [rightTab, setRightTab] = useState('schedules');
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent('collab:state-change', {
+      detail: {
+        isConnected: collab.isConnected,
+        isHost: collab.isHost,
+        connectedUsers: collab.connectedUsers,
+        connectionQuality: collab.connectionQuality,
+        latency: collab.latency,
+        myUserName: collab.myUserName,
+        myColor: hashColor(collab.myUserName || collab.clientId),
+        sessionInfo: collab.sessionInfo,
+        shareFullHistory: collab.shareFullHistory,
+        onSetPermission: collab.setClientPermission,
+        onLeaveSession: collab.leaveSession,
+        onShareFullHistoryChange: collab.setShareFullHistory,
+      }
+    }));
+  }, [collab.isConnected, collab.isHost, collab.connectedUsers, collab.connectionQuality, collab.latency, collab.myUserName, collab.sessionInfo, collab.shareFullHistory, collab.clientId, collab.setClientPermission, collab.leaveSession, collab.setShareFullHistory]);
 
   // Prevent default window dragover/drop behaviors to allow Tauri/WebView2 HTML5 drag and drop
   useEffect(() => {
@@ -171,6 +266,105 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
   const lastExportJsonTriggerRef = useRef(exportJsonTrigger);
   const lastExportExcelRoomTriggerRef = useRef(exportExcelRoomTrigger);
   const lastImportExcelTriggerRef = useRef(importExcelTrigger);
+
+  // DOCX template state and image generation
+  const [timetableImgDataUrl, setTimetableImgDataUrl] = useState<string | null>(null);
+  const [timetableGridAspectRatio, setTimetableGridAspectRatio] = useState<number>(1.6);
+  const [selectedTemplatePosition, setSelectedTemplatePosition] = useState<{
+    pageIndex: number;
+    xPct: number;
+    yPct: number;
+    wPct: number;
+    hPct: number;
+    targetParagraphIndex: number;
+  } | null>(null);
+
+  const [layoutConfig, setLayoutConfig] = useState<{
+    orientation: 'portrait' | 'landscape';
+    paperSize: { widthDxa: number; heightDxa: number };
+    margins: { topDxa: number; bottomDxa: number; leftDxa: number; rightDxa: number };
+  } | null>(null);
+
+  useEffect(() => {
+    if (!docxTemplate) {
+      setTimetableImgDataUrl(null);
+      setSelectedTemplatePosition(null);
+      return;
+    }
+
+    async function captureGrid() {
+      // Small timeout for layout stability
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const target = document.querySelector('.timetable-grid-capture-target');
+      if (target) {
+        try {
+          const dataUrl = await toPng(target as HTMLElement, {
+            backgroundColor: '#ffffff',
+            style: {
+              transform: 'scale(1)',
+              transformOrigin: 'top left'
+            }
+          });
+          setTimetableImgDataUrl(dataUrl);
+
+          const rect = target.getBoundingClientRect();
+          if (rect.height > 0) {
+            setTimetableGridAspectRatio(rect.width / rect.height);
+          }
+        } catch (err) {
+          console.error('Failed to capture timetable grid image:', err);
+        }
+      }
+    }
+    void captureGrid();
+  }, [docxTemplate]);
+
+  async function handleExportDocxFinal() {
+    if (!docxTemplate || !timetableImgDataUrl || !selectedTemplatePosition) return;
+
+    try {
+      setStatusMessage('Exporting Word document...');
+      const response = await fetch(timetableImgDataUrl);
+      const blob = await response.blob();
+      const arrayBuffer = await blob.arrayBuffer();
+      const imageBytes = new Uint8Array(arrayBuffer);
+
+      const resultBytes = await exportToDocxTemplate(
+        docxTemplate.bytes,
+        imageBytes,
+        selectedTemplatePosition.xPct,
+        selectedTemplatePosition.yPct,
+        selectedTemplatePosition.wPct,
+        selectedTemplatePosition.hPct,
+        selectedTemplatePosition.targetParagraphIndex,
+        selectedTemplatePosition.pageIndex,
+        layoutConfig || undefined
+      );
+
+      const defaultFilename = `${timetableName}_docx_export.docx`;
+      const resolvedPath = await invoke<string>('resolve_default_path', { filename: defaultFilename });
+
+      const selectedPath = await save({
+        title: 'Export Timetable Word Document',
+        defaultPath: resolvedPath,
+        filters: [{ name: 'Word Documents', extensions: ['docx'] }],
+      });
+
+      if (!selectedPath) {
+        setStatusMessage('');
+        return;
+      }
+
+      await invoke('save_file_bytes', { path: selectedPath, bytes: Array.from(resultBytes) });
+      messageApi.success(`Exported document to ${selectedPath.split(/[\\/]/).pop()}`);
+      onClearDocxTemplate();
+      setStatusMessage('');
+    } catch (err: unknown) {
+      console.error(err);
+      messageApi.error(`Word export failed: ${err instanceof Error ? err.message : String(err)}`);
+      setStatusMessage('');
+    }
+  }
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportFilterType, setExportFilterType] = useState<'current' | 'all' | 'room'>('current');
@@ -1098,6 +1292,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
       }
     } else {
       setSelectedScheduleBlock({ entry, schedule });
+      setRightTab('properties');
     }
   }, [linkingModeActive, linkingFirstBlockKey]);
 
@@ -1796,10 +1991,37 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           if (previewGhost) { previewGhost.remove(); previewGhost = null; }
           return;
         }
+
+        // Build dynamic row layout from store values
+        const gH = storeRef.current.globalRowHeight;
+        const rH = storeRef.current.rowHeights;
+        const vs = viewStart;
+        const ve = viewEnd;
+        const SLOT_INT = 30;
+        const rc = (ve - vs) / SLOT_INT;
+        const tops: number[] = [];
+        const heights: number[] = [];
+        let curTop = 0;
+        for (let i = 0; i < rc; i++) {
+          const h = rH[i] ?? gH;
+          tops.push(curTop);
+          heights.push(h);
+          curTop += h;
+        }
+
         const rect = columnEl.getBoundingClientRect();
         const relativeY = e.clientY - rect.top;
-        const slotIndex = Math.max(0, Math.floor((relativeY - 32) / 36));
-        const topPx = slotIndex * 36;
+        let slotIndex = 0;
+        for (let i = 0; i < rc; i++) {
+          const bottom = tops[i] + heights[i];
+          if (relativeY >= tops[i] && relativeY < bottom) { slotIndex = i; break; }
+          if (i === rc - 1) slotIndex = i;
+        }
+        const topPx = tops[slotIndex];
+
+        // Ghost height for 60-minute entry (2 slots)
+        const endSlot = Math.min(slotIndex + 2, rc - 1);
+        const ghPx = tops[endSlot] + heights[endSlot] - tops[slotIndex];
 
         if (!previewGhost) {
           previewGhost = document.createElement('div');
@@ -1820,7 +2042,7 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           columnEl.appendChild(previewGhost);
         }
 
-        gsap.set(previewGhost, { top: topPx + 1, left: 2, right: 2, height: 34 });
+        gsap.set(previewGhost, { top: topPx + 1, left: 2, right: 2, height: ghPx });
       } else {
         if (previewGhost) { previewGhost.remove(); previewGhost = null; }
       }
@@ -1841,9 +2063,26 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           messageApi.warning('Please select a Room Timetable first.');
           return;
         }
+
+        const gH = storeRef.current.globalRowHeight;
+        const rH = storeRef.current.rowHeights;
+        const SLOT_INT = 30;
+        const rc = (viewEnd - viewStart) / SLOT_INT;
+        const tops: number[] = [];
+        let curTop = 0;
+        for (let i = 0; i < rc; i++) {
+          tops.push(curTop);
+          curTop += rH[i] ?? gH;
+        }
+
         const rect = columnEl.getBoundingClientRect();
         const relativeY = e.clientY - rect.top;
-        const slotIndex = Math.max(0, Math.floor((relativeY - 32) / 36));
+        let slotIndex = 0;
+        for (let i = 0; i < rc; i++) {
+          const bottom = i < rc - 1 ? tops[i + 1] : tops[i] + (rH[i] ?? gH);
+          if (relativeY >= tops[i] && relativeY < bottom) { slotIndex = i; break; }
+          if (i === rc - 1) slotIndex = i;
+        }
         const startMin = viewStart + slotIndex * 30;
         handleDropEntry(entryId, day, startMin, room);
       }
@@ -2205,88 +2444,105 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
         {notificationContextHolder}
 
         {/* ── Ribbon Toolbar ────────────────────────────────────────── */}
-        <RibbonToolbar
-          onSave={() => window.dispatchEvent(new CustomEvent('titlebar:save'))}
-          onSaveAs={handleSaveAs}
-          onImportMerge={handleMergeImport}
-          canUndo={store.canUndo}
-          canRedo={store.canRedo}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-          filterType={filterType}
-          onFilterTypeChange={setFilterType}
-          selectedStudentKey={selectedStudentKey}
-          onSelectedStudentKeyChange={setSelectedStudentKey}
-          studentSchedules={studentSchedules}
-          selectedTeacher={selectedTeacher}
-          onSelectedTeacherChange={setSelectedTeacher}
-          teacherOptions={teacherOptions}
-          selectedRooms={selectedRooms}
-          onSelectedRoomsChange={handleSelectedRoomsChange}
-          roomOptions={roomOptions}
-          theme={store.theme}
-          onThemeChange={store.updateTheme}
-          bandedRows={store.bandedRows}
-          onBandedRowsChange={store.updateBandedRows}
-          hiddenDays={store.hiddenDays}
-          onToggleDay={store.setHiddenDays}
-          viewStart={viewStart}
-          onViewStartChange={setViewStart}
-          viewEnd={viewEnd}
-          onViewEndChange={setViewEnd}
-          timeOptions={TIME_OPTIONS}
-          onAddSubjectEntry={() => {
-            store.cancelEdit();
-            setSubjectDrawerOpen(true);
-          }}
-          dynamicData={store.dynamicData}
-          addDynamicData={store.addDynamicData}
-          deleteDynamicData={store.deleteDynamicData}
-          updateDynamicData={store.updateDynamicData}
-          linkingModeActive={linkingModeActive}
-          onToggleLinkingMode={handleToggleLinkingMode}
-        />
+        {!docxTemplate && (
+          <RibbonToolbar
+            onSave={() => window.dispatchEvent(new CustomEvent('titlebar:save'))}
+            onSaveAs={handleSaveAs}
+            onImportMerge={handleMergeImport}
+            canUndo={store.canUndo}
+            canRedo={store.canRedo}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+            filterType={filterType}
+            onFilterTypeChange={setFilterType}
+            selectedStudentKey={selectedStudentKey}
+            onSelectedStudentKeyChange={setSelectedStudentKey}
+            studentSchedules={studentSchedules}
+            selectedTeacher={selectedTeacher}
+            onSelectedTeacherChange={setSelectedTeacher}
+            teacherOptions={teacherOptions}
+            selectedRooms={selectedRooms}
+            onSelectedRoomsChange={handleSelectedRoomsChange}
+            roomOptions={roomOptions}
+            theme={store.theme}
+            onThemeChange={store.updateTheme}
+            bandedRows={store.bandedRows}
+            onBandedRowsChange={store.updateBandedRows}
+            hiddenDays={store.hiddenDays}
+            onToggleDay={store.setHiddenDays}
+            viewStart={viewStart}
+            onViewStartChange={setViewStart}
+            viewEnd={viewEnd}
+            onViewEndChange={setViewEnd}
+            timeOptions={TIME_OPTIONS}
+            onAddSubjectEntry={() => {
+              store.cancelEdit();
+              setSubjectDrawerOpen(true);
+            }}
+            dynamicData={store.dynamicData}
+            addDynamicData={store.addDynamicData}
+            deleteDynamicData={store.deleteDynamicData}
+            updateDynamicData={store.updateDynamicData}
+            linkingModeActive={linkingModeActive}
+            onToggleLinkingMode={handleToggleLinkingMode}
+            globalColWidth={store.globalColWidth}
+            globalRowHeight={store.globalRowHeight}
+            onApplyGlobalCellSizing={store.applyGlobalCellSizing}
+            isCollabConnected={collab.isConnected}
+            onHostSession={() => setHostModalOpen(true)}
+            onJoinSession={() => setJoinModalOpen(true)}
+            onLeaveSession={collab.leaveSession}
+          />
+        )}
 
         {/* ── Main Workspace Body ───────────────────────────────────── */}
         <Content style={{ display: 'flex', alignItems: 'stretch', overflow: 'hidden', flex: 1, minHeight: 0, position: 'relative' }}>
           {/* Left Panel: Subject Entries List (Fill full height) */}
-          <div
-            style={{
-              width: 350,
-              flexShrink: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              height: '100%',
-              borderRight: '1px solid #D0D7E3',
-              background: '#FFFFFF',
-            }}
-          >
-            <BlueprintList
-              blueprints={store.blueprints}
-              onEdit={handleEdit}
-              onDelete={store.deleteBlueprint}
-              onDeleteBatch={store.deleteBlueprints}
-              hiddenEntryIds={hiddenEntryIds}
-              onToggleHide={handleToggleHideEntry}
-              editingEntryId={editingEntry?.id}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              searchResults={searchResults}
-              onDragStartCustom={handleDragStartCustom}
-            />
-          </div>
+          {!docxTemplate && (
+            <div
+              style={{
+                width: 350,
+                flexShrink: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                borderRight: '1px solid #D0D7E3',
+                background: '#FFFFFF',
+              }}
+            >
+              <BlueprintList
+                blueprints={store.blueprints}
+                onEdit={handleEdit}
+                onDelete={store.deleteBlueprint}
+                onDeleteBatch={store.deleteBlueprints}
+                hiddenEntryIds={hiddenEntryIds}
+                onToggleHide={handleToggleHideEntry}
+                editingEntryId={editingEntry?.id}
+                searchQuery={searchQuery}
+                onSearchChange={setSearchQuery}
+                searchResults={searchResults}
+                onDragStartCustom={handleDragStartCustom}
+              />
+            </div>
+          )}
 
           {/* Right Panel: Timetable Grid (Fill remaining space) */}
           <div
+            className="timetable-grid-capture-target-wrapper"
             style={{
-              flex: 1,
-              minWidth: 0,
-              background: '#FFFFFF',
+              flex: docxTemplate ? 'none' : 1,
+              width: docxTemplate ? 1200 : 'auto',
+              height: docxTemplate ? 800 : '100%',
               overflow: 'hidden',
               display: 'flex',
               flexDirection: 'column',
-              height: '100%',
-              padding: '12px 12px 0',
+              position: docxTemplate ? 'absolute' : 'relative',
+              left: docxTemplate ? -9999 : 0,
+              top: docxTemplate ? -9999 : 0,
+              opacity: docxTemplate ? 0 : 1,
+              pointerEvents: docxTemplate ? 'none' : 'auto',
+              padding: docxTemplate ? 0 : '12px 12px 0',
+              background: '#FFFFFF',
             }}
           >
             <div ref={gridWrapperRef} style={{ flex: 1, overflowY: 'auto', minHeight: 0, willChange: 'opacity' }}>
@@ -2317,37 +2573,100 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
                 onCopyBlocks={handleCopyBlocks}
                 onPasteBlocks={handlePasteBlocks}
                 canPaste={clipboardBlocks.length > 0}
+                columnWidths={store.columnWidths}
+                rowHeights={store.rowHeights}
+                globalColWidth={store.globalColWidth}
+                globalRowHeight={store.globalRowHeight}
+                onCommitCellSizes={store.commitCellSizes}
               />
             </div>
           </div>
 
-          {/* Right Slide-in Schedules Panel / Schedule Properties */}
-          {activeSelectedBlock ? (
-            <SchedulePropertiesPanel
-              disabled={selectedBlockKeys.size > 1}
-              entry={activeSelectedBlock.entry}
-              schedule={activeSelectedBlock.schedule}
-              dynamicData={store.dynamicData}
-              onSave={(updatedEntry) => {
-                const scheduleId = activeSelectedBlock.schedule.id;
-                const conflicts = store.updateInstance(updatedEntry, scheduleId);
-                if (conflicts.length > 0) {
-                  messageApi.error('Conflict detected during save! Check conflict details.');
-                } else {
-                  messageApi.success('Subject properties updated.');
-                }
+          {/* Right Panel: DOCX Template / Tabbed Schedules + Properties + History */}
+          {docxTemplate ? (
+            <div
+              style={{
+                flex: 1,
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                background: '#FFFFFF',
               }}
-              onCancel={() => setSelectedScheduleBlock(null)}
-              onDeleteSchedule={(entryId, scheduleId) => {
-                handleDeleteSchedule(entryId, scheduleId);
-                setSelectedScheduleBlock(null);
-              }}
-            />
+            >
+              <DocxTemplatePreview
+                bytes={docxTemplate.bytes}
+                name={docxTemplate.name}
+                timetableImg={timetableImgDataUrl}
+                timetableAspectRatio={timetableGridAspectRatio}
+                onClose={onClearDocxTemplate}
+                onSelectPosition={setSelectedTemplatePosition}
+                onLayoutConfigChange={setLayoutConfig}
+                onExport={handleExportDocxFinal}
+                canExport={!!selectedTemplatePosition && !!timetableImgDataUrl}
+              />
+            </div>
           ) : (
-            <PlacedSchedules
-              entries={gridEntries}
-              onHighlightSchedule={handleHighlightSchedule}
-              onDeleteSchedule={handleDeleteSchedule}
+            <RightPanelTabs
+              activeTab={rightTab}
+              onTabChange={setRightTab}
+              tabs={[
+                {
+                  key: 'schedules' as const,
+                  label: 'Schedules',
+                  component: (
+                    <PlacedSchedules
+                      entries={gridEntries}
+                      onHighlightSchedule={handleHighlightSchedule}
+                      onDeleteSchedule={handleDeleteSchedule}
+                    />
+                  ),
+                },
+                {
+                  key: 'properties',
+                  label: 'Properties',
+                  component: activeSelectedBlock ? (
+                    <SchedulePropertiesPanel
+                      disabled={selectedBlockKeys.size > 1}
+                      entry={activeSelectedBlock.entry}
+                      schedule={activeSelectedBlock.schedule}
+                      dynamicData={store.dynamicData}
+                      onSave={(updatedEntry) => {
+                        const scheduleId = activeSelectedBlock.schedule.id;
+                        const conflicts = store.updateInstance(updatedEntry, scheduleId);
+                        if (conflicts.length > 0) {
+                          messageApi.error('Conflict detected during save! Check conflict details.');
+                        } else {
+                          messageApi.success('Subject properties updated.');
+                        }
+                      }}
+                      onCancel={() => {
+                        setSelectedScheduleBlock(null);
+                        setRightTab('schedules');
+                      }}
+                      onDeleteSchedule={(entryId, scheduleId) => {
+                        handleDeleteSchedule(entryId, scheduleId);
+                        setSelectedScheduleBlock(null);
+                        setRightTab('schedules');
+                      }}
+                    />
+                  ) : (
+                    <div style={{ padding: 24, textAlign: 'center', color: '#8c8c8c', fontSize: 12 }}>
+                      Select a schedule block to edit its properties
+                    </div>
+                  ),
+                },
+                {
+                  key: 'history' as const,
+                  label: 'History',
+                  component: (
+                    <CommitHistorySidebar
+                      commits={commitHistory.commits}
+                      myAuthorId={collab.clientId}
+                      isLoading={commitHistory.isLoading}
+                    />
+                  ),
+                },
+              ]}
             />
           )}
         </Content>
@@ -2369,6 +2688,11 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           importNotifications={importNotifications}
           roomConflictSummary={roomConflictSummary}
           onRefreshRoomConflicts={handleRefreshRoomConflicts}
+
+          collabConnected={collab.isConnected}
+          collabLatency={collab.latency}
+          collabUsersCount={collab.connectedUsers.length}
+          collabSessionInfo={collab.sessionInfo}
         />
 
         {/* ── Suggestions Modal ────────────────────────────────────── */}
@@ -3049,6 +3373,21 @@ export function TimetablePage({ timetableId, timetableName, onBack: _onBack, exp
           </p>
         </div>
       </Modal>
+
+      {/* Collaboration Setup Modals */}
+      <CollabSetupModals
+        hostModalOpen={hostModalOpen}
+        joinModalOpen={joinModalOpen}
+        onClose={() => { setHostModalOpen(false); setJoinModalOpen(false); }}
+        onHost={async (port, userName) => {
+          await collab.hostSession(port, userName);
+          setHostModalOpen(false);
+        }}
+        onJoin={async (hostIp, port, userName) => {
+          await collab.joinSession(hostIp, port, userName);
+          setJoinModalOpen(false);
+        }}
+      />
     </ConfigProvider>
   );
 }

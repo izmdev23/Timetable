@@ -24,6 +24,12 @@ interface StatusBarProps {
   importNotifications?: string[];
   roomConflictSummary?: Array<{ room: string; conflictCount: number; roomValue: string }>;
   onRefreshRoomConflicts?: () => void;
+
+  // Collaboration
+  collabConnected?: boolean;
+  collabLatency?: number;
+  collabUsersCount?: number;
+  collabSessionInfo?: { ip: string; port: number } | null;
 }
 
 export function StatusBar({
@@ -41,6 +47,11 @@ export function StatusBar({
   importNotifications = [],
   roomConflictSummary = [],
   onRefreshRoomConflicts,
+
+  collabConnected,
+  collabLatency,
+  collabUsersCount,
+  collabSessionInfo,
 }: StatusBarProps) {
   const [notifDrawerOpen, setNotifDrawerOpen] = useState(false);
 
@@ -65,8 +76,25 @@ export function StatusBar({
         fontSize: 10,
       }}
     >
-      {/* Left: Filename + status message */}
+      {/* Left: Collab indicator + Filename + status message */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, marginRight: 8 }}>
+        {collabConnected && (
+          <Text
+            style={{
+              fontSize: 10,
+              color: '#52c41a',
+              fontWeight: 600,
+              whiteSpace: 'nowrap',
+              cursor: 'help',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 3,
+            }}
+            title={collabSessionInfo ? `${collabSessionInfo.ip}:${collabSessionInfo.port} · ${collabUsersCount || 0} users · ${collabLatency}ms` : undefined}
+          >
+            🟢 {collabUsersCount || 0}
+          </Text>
+        )}
         <Text style={{ fontSize: 10, color: 'rgba(255,255,255,0.85)' }}>
           {fileName && isDirty && (
             <Text style={{ fontSize: 14, lineHeight: '10px', color: 'rgba(255,255,255,0.85)' }}>●</Text>

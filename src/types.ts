@@ -122,3 +122,76 @@ export interface FormState {
   department?: string;
 }
 
+/** ── Collaboration & Commit History Types ── */
+
+export interface PermissionSet {
+  all: boolean;
+  write: boolean;
+  delete: boolean;
+  create: boolean;
+}
+
+export interface CollabUser {
+  clientId: string;
+  userName: string;
+  color: string;
+  permissions: PermissionSet;
+  joinedAt: number;
+  isHost: boolean;
+}
+
+export interface CommitRecord {
+  id: string;
+  timetableId: string;
+  actionType: string;
+  actionJson: string;
+  description: string;
+  author: string;
+  authorId: string;
+  timestamp: number;
+  isUndo: boolean;
+  undoneCommitId: string | null;
+}
+
+export interface CollabAction {
+  op:
+    | 'addBlueprint'
+    | 'addInstance'
+    | 'addInstances'
+    | 'updateInstance'
+    | 'deleteBlueprint'
+    | 'deleteBlueprints'
+    | 'deleteInstance'
+    | 'setHiddenDays'
+    | 'updateTheme'
+    | 'updateBandedRows'
+    | 'addDynamicData'
+    | 'deleteDynamicData'
+    | 'updateDynamicData'
+    | 'addLinksBatched'
+    | 'mergeEntries'
+    | 'mergeBlueprints'
+    | 'addBlueprints'
+    | 'addBlueprintsAndInstances'
+    | 'undo';
+  payload: Record<string, unknown>;
+}
+
+export interface CollabState {
+  blueprints: SubjectEntry[];
+  instances: SubjectEntry[];
+  dynamicData: DynamicData[];
+  hiddenDays: DayOfWeek[];
+  theme: string;
+  bandedRows: boolean;
+  filePath: string | null;
+}
+
+export interface CollabServerStatus {
+  running: boolean;
+  port: number;
+  peer_count: number;
+}
+
+export type ConnectionQuality = 'good' | 'degraded' | 'disconnected';
+

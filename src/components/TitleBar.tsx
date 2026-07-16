@@ -16,6 +16,8 @@ import {
   ImportOutlined,
   ExportOutlined,
 } from "@ant-design/icons";
+import type { CollabUser, ConnectionQuality, PermissionSet } from "../types";
+import { CollabUserMenu } from "./CollabUserMenu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import Database from "@tauri-apps/plugin-sql";
@@ -40,6 +42,8 @@ interface TitleBarProps {
   onExportJson?: () => void;
   /** Called to trigger Export Room Excel */
   onExportExcelRoom?: () => void;
+  /** Called to trigger Export Word (Docx) */
+  onExportDocx?: () => void;
   /** Called to trigger Import and Merge */
   onImportMerge?: () => void;
   /** Called to trigger Import Blueprints from Excel */
@@ -50,6 +54,20 @@ interface TitleBarProps {
   onRedo?: () => void;
   canUndo?: boolean;
   canRedo?: boolean;
+
+  // Collaboration
+  collabConnected?: boolean;
+  collabUsers?: CollabUser[];
+  collabQuality?: ConnectionQuality;
+  collabLatency?: number;
+  collabMyName?: string;
+  collabMyColor?: string;
+  collabSessionInfo?: { ip: string; port: number } | null;
+  collabShareHistory?: boolean;
+  collabIsHost?: boolean;
+  onCollabSetPermission?: (clientId: string, perms: PermissionSet) => void;
+  onCollabLeaveSession?: () => void;
+  onCollabShareHistoryChange?: (v: boolean) => void;
 }
 
 /** Custom frameless title bar with a File dropdown menu and window controls. */
@@ -62,6 +80,7 @@ export function TitleBar({
   onSave,
   onExportJson,
   onExportExcelRoom,
+  onExportDocx,
   onImportMerge,
   onImportExcel,
   onOpenPreferences,
@@ -69,6 +88,19 @@ export function TitleBar({
   onRedo,
   canUndo = false,
   canRedo = false,
+
+  collabConnected,
+  collabUsers,
+  collabQuality,
+  collabLatency,
+  collabMyName,
+  collabMyColor,
+  collabSessionInfo,
+  collabShareHistory,
+  collabIsHost,
+  onCollabSetPermission,
+  onCollabLeaveSession,
+  onCollabShareHistoryChange,
 }: TitleBarProps) {
   const [messageApi, contextHolder] = message.useMessage();
 
@@ -182,6 +214,7 @@ export function TitleBar({
       children: [
         { key: "export-json", label: label("Export Collection Data (JSON)"), onClick: onExportJson },
         { key: "export-excel-room", label: label("Export Room Timetable (Excel)"), onClick: onExportExcelRoom },
+        { key: "export-docx", label: label("Export Timetable (Word/Docx)"), onClick: onExportDocx },
       ],
     },
     { type: "divider" },
@@ -263,8 +296,24 @@ export function TitleBar({
           </div>
         </div>
 
-        {/* Right: window controls */}
-        <div style={{ display: "flex", alignItems: "center" }} onMouseDown={(e) => e.stopPropagation()}>
+        {/* Right: collab user menu + window controls */}
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }} onMouseDown={(e) => e.stopPropagation()}>
+          {collabConnected && (
+            <CollabUserMenu
+              isConnected={collabConnected}
+              connectedUsers={collabUsers ?? []}
+              myUserName={collabMyName ?? ''}
+              myColor={collabMyColor ?? '#61AFEF'}
+              connectionQuality={collabQuality ?? 'disconnected'}
+              latency={collabLatency ?? 0}
+              sessionInfo={collabSessionInfo ?? null}
+              isHost={collabIsHost ?? false}
+              shareFullHistory={collabShareHistory ?? false}
+              onSetPermission={onCollabSetPermission ?? (() => {})}
+              onLeaveSession={onCollabLeaveSession ?? (() => {})}
+              onShareFullHistoryChange={onCollabShareHistoryChange ?? (() => {})}
+            />
+          )}
           {(["minimize", "maximize", "close"] as const).map((action) => (
             <button
               key={action}
