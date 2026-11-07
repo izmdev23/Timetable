@@ -9,7 +9,7 @@ Timetable is created to address that problem. It even has a built-in local netwo
 
 Timetable utilizes *tables* to visualize schedules. Within a table is a collection of *blocks*. Each block represents a schedule
 
-![Alt Text](public\readme\table.png)
+![Alt Text](./public/readme/table.png)
 *This is a table that contains blocks*
 
 Timetable can also have multiple tables within a single Timetable file (.ttcl) similar to a worksheet in a spreadsheet app. This can be used to organize multiple rooms or establishment with different schedules all through the week.
