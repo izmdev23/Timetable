@@ -1,13 +1,15 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, Suspense } from 'react';
 import gsap from 'gsap';
 import { Layout, Typography, Spin, message, Button, Modal, List, Select, Checkbox, ConfigProvider, Drawer, Space, notification, Progress } from 'antd';
-import { DeleteOutlined } from '@ant-design/icons';
+import { X } from 'lucide-react';
 import { useTimetableStore } from '../hooks/useTimetableStore';
 import { getLinks, getConnectedKeys } from '../utils/linkUtils';
 import { getThemeConfig } from '../theme';
 import { BlueprintList } from '../components/BlueprintList';
 import { TimetableGrid } from '../components/TimetableGrid';
 import { exportToXlsx, exportToXlsxBatch } from '../utils/exportXlsx';
+import type { ExportPresentationOptions } from '../utils/exportXlsx';
+import { ExportPresentationSettings, loadExportPresentation, saveExportPresentation } from '../components/ExportPresentationSettings';
 import * as ExcelJS from 'exceljs';
 import { usePreferences } from '../context/PreferencesContext';
 import { save, ask, open } from '@tauri-apps/plugin-dialog';
@@ -371,6 +373,7 @@ export function TimetablePage({
   const [exportSelectedRooms, setExportSelectedRooms] = useState<string[]>([]);
   const [exportExactMatch, setExportExactMatch] = useState(false);
   const [pendingExportPath, setPendingExportPath] = useState<string | null>(null);
+  const [exportPresentation, setExportPresentation] = useState<ExportPresentationOptions>(() => loadExportPresentation());
 
   const [filterType, setFilterType] = useState<'all' | 'student' | 'teacher' | 'room'>('all');
   const [selectedStudentKey, setSelectedStudentKey] = useState<string | null>(null);
@@ -1099,6 +1102,7 @@ export function TimetablePage({
           entriesToProcess, `${timetableName}.xlsx`,
           store.hiddenDays, prefs.excludeHiddenDays, viewStart, viewEnd, prefs.excludeTimeWindow,
           selectedPath, store.theme, store.bandedRows,
+          exportPresentation,
         );
         messageApi.success(`Exported Excel to ${selectedPath.split(/[\\\/]/).pop()}`);
       } catch (e: unknown) {
@@ -1494,6 +1498,57 @@ export function TimetablePage({
       });
     }
 
+    function fractionToTimeStr(fraction: number, fmt: 'auto' | '12h' | '24h'): string {
+      const totalMin = Math.round(fraction * 1440);
+      const h = Math.floor(totalMin / 60) % 24;
+      const m = totalMin % 60;
+      if (fmt === '24h') return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+      const mer = h >= 12 ? 'pm' : 'am';
+      const h12 = h % 12 === 0 ? 12 : h % 12;
+      return `${h12}:${m.toString().padStart(2, '0')}${mer}`;
+    }
+
+    function normalizeCellValue(raw: unknown, fmt: 'auto' | '12h' | '24h'): string | null {
+      let value: unknown = raw;
+      for (;;) {
+        if (value === null || value === undefined) return null;
+        if (value instanceof Date) {
+          if (value.getUTCFullYear() <= 1900) {
+            // Excel time-only cells arrive as 1900-epoch dates; the UTC portion is the wall-clock time
+            return fractionToTimeStr(
+              (value.getUTCHours() * 3600 + value.getUTCMinutes() * 60 + value.getUTCSeconds()) / 86400,
+              fmt,
+            );
+          }
+          return value.toISOString().slice(0, 10);
+        }
+        if (typeof value === 'number') {
+          if (value > 0 && value < 1) return fractionToTimeStr(value, fmt);
+          return String(value);
+        }
+        if (typeof value === 'string') return value.trim() || null;
+        if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+        const obj = value as Record<string, unknown>;
+        if (Array.isArray(obj.richText)) {
+          const text = obj.richText
+            .map((t: unknown) => (t !== null && typeof t === 'object' && 'text' in t ? String((t as { text: unknown }).text) : ''))
+            .join('');
+          return text.trim() || null;
+        }
+        if ('error' in obj) return null;
+        // Unwrap formula results and hyperlink payload objects iteratively
+        if ('formula' in obj) {
+          value = obj.result;
+          continue;
+        }
+        if ('hyperlink' in obj) {
+          value = obj.text;
+          continue;
+        }
+        return null;
+      }
+    }
+
     try {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(importExcelFileBytes as any);
@@ -1529,7 +1584,7 @@ export function TimetablePage({
           const idx = mp[field];
           if (idx === undefined) return '';
           const cell = row.getCell(idx + 1);
-          return cell.value?.toString()?.trim() || '';
+          return (normalizeCellValue(cell.value, timeFormat) || '').trim();
         };
 
         const subjectCode = getVal(colMap, 'subjectCode');
@@ -1796,33 +1851,36 @@ export function TimetablePage({
         }
       }
 
+      const addDynSafely = async (dataType: string, value: string, displayAs: string, label: string): Promise<void> => {
+        try {
+          await store.addDynamicData(dataType, value, displayAs);
+          notifications.push(`Created ${label}`);
+        } catch (err: unknown) {
+          notifications.push(`Failed to create ${label}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      };
+
       if (autoCreateMissing) {
         for (const programVal of missingPrograms) {
-          await store.addDynamicData('program', programVal, programVal);
-          notifications.push(`Created program "${programVal}"`);
+          await addDynSafely('program', programVal, programVal, `program "${programVal}"`);
         }
         for (const sectionVal of missingSections) {
-          await store.addDynamicData('section', sectionVal, sectionVal);
-          notifications.push(`Created section "${sectionVal}"`);
+          await addDynSafely('section', sectionVal, sectionVal, `section "${sectionVal}"`);
         }
         for (const yearVal of missingYears) {
-          await store.addDynamicData('year', yearVal, yearVal);
-          notifications.push(`Created year "${yearVal}"`);
+          await addDynSafely('year', yearVal, yearVal, `year "${yearVal}"`);
         }
         for (const deptVal of missingDepartments) {
-          await store.addDynamicData('department', deptVal, deptVal);
-          notifications.push(`Created department "${deptVal}"`);
+          await addDynSafely('department', deptVal, deptVal, `department "${deptVal}"`);
         }
         for (const bldgVal of missingBuildings) {
           if (!store.dynamicData.some((d: DynamicData) => d.dataType === 'building' && d.value === bldgVal)) {
-            await store.addDynamicData('building', bldgVal, bldgVal);
-            notifications.push(`Created building "${bldgVal}"`);
+            await addDynSafely('building', bldgVal, bldgVal, `building "${bldgVal}"`);
           }
         }
         for (const [, info] of unknownRooms) {
           const displayAs = `${info.roomName}|${info.buildingName}`;
-          await store.addDynamicData('room', info.roomName, displayAs);
-          notifications.push(`Created room "${info.roomName}" in building "${info.buildingName}"`);
+          await addDynSafely('room', info.roomName, displayAs, `room "${info.roomName}" in building "${info.buildingName}"`);
         }
 
         if (includeSchedule) {
@@ -1834,7 +1892,7 @@ export function TimetablePage({
               addedNames.add(key);
               const value = formatInstructorValue(inst.firstName, inst.middleName, inst.lastName);
               const displayAs = formatInstructorDisplay(inst.firstName, inst.middleName, inst.lastName);
-              await store.addDynamicData('instructor', value, displayAs);
+              await addDynSafely('instructor', value, displayAs, `instructor "${displayAs}"`);
             }
           }
         }
@@ -1880,6 +1938,12 @@ export function TimetablePage({
         for (const [displayName] of unknownInstructors) {
           notifications.push(`1 row(s) reference unknown instructor "${displayName}"`);
         }
+      }
+
+      if (includeSchedule && instancesToAdd.length === 0) {
+        notifications.unshift(
+          '0 schedules were placed. Check that the Day In/Out columns are mapped in the Include Schedule section and that time values parse in the selected time format (processing issues are listed in this summary).',
+        );
       }
 
       let totalConflicts = 0;
@@ -2485,9 +2549,41 @@ export function TimetablePage({
             updateDynamicData={store.updateDynamicData}
             linkingModeActive={linkingModeActive}
             onToggleLinkingMode={handleToggleLinkingMode}
-            globalColWidth={store.globalColWidth}
+globalColWidth={store.globalColWidth}
             globalRowHeight={store.globalRowHeight}
             onApplyGlobalCellSizing={store.applyGlobalCellSizing}
+            verticalAlignment={store.verticalAlignment}
+            onVerticalAlignmentChange={(val) => store.commitState(
+              store.blueprints,
+              store.instances,
+              store.editingEntryId,
+              store.formState,
+              false,
+              store.hiddenDays,
+              store.columnWidths,
+              store.rowHeights,
+              store.globalColWidth,
+              store.globalRowHeight,
+              val,
+              store.horizontalAlignment,
+              'local'
+            )}
+            horizontalAlignment={store.horizontalAlignment}
+            onHorizontalAlignmentChange={(val) => store.commitState(
+              store.blueprints,
+              store.instances,
+              store.editingEntryId,
+              store.formState,
+              false,
+              store.hiddenDays,
+              store.columnWidths,
+              store.rowHeights,
+              store.globalColWidth,
+              store.globalRowHeight,
+              store.verticalAlignment,
+              val,
+              'local'
+            )}
             isCollabConnected={collab.isConnected}
             onHostSession={() => setHostModalOpen(true)}
             onJoinSession={() => setJoinModalOpen(true)}
@@ -2705,7 +2801,7 @@ export function TimetablePage({
                   type="text"
                   danger
                   size="small"
-                  icon={<DeleteOutlined />}
+                  icon={<X />}
                   onClick={async () => {
                     await store.clearImportedSuggestions();
                     messageApi.success('All imported suggestions cleared.');
@@ -2742,7 +2838,7 @@ export function TimetablePage({
                         type="text"
                         danger
                         size="small"
-                        icon={<DeleteOutlined style={{ fontSize: 12 }} />}
+                        icon={<X style={{ fontSize: 12 }} />}
                         onClick={async () => {
                           await store.deleteImportedSuggestion(index);
                           messageApi.success('Suggestion deleted.');
@@ -2835,6 +2931,18 @@ export function TimetablePage({
                 </>
               )}
             </div>
+
+            {exportModalOpen && (
+              <Suspense fallback={null}>
+                <ExportPresentationSettings
+                  value={exportPresentation}
+                  onChange={(next) => {
+                    setExportPresentation(next);
+                    saveExportPresentation(next);
+                  }}
+                />
+              </Suspense>
+            )}
           </div>
         </Modal>
 
@@ -2937,6 +3045,7 @@ export function TimetablePage({
                 entriesToExport, `${timetableName}_${exportRoomRoom.replace(/[|]/g, '_')}.xlsx`,
                 store.hiddenDays, true, viewStart, viewEnd, true,
                 selectedPath, store.theme, store.bandedRows,
+                exportPresentation,
               );
               messageApi.success(`Exported room timetable to ${selectedPath.split(/[\\/]/).pop()}`);
             } catch (e: unknown) {
@@ -2967,6 +3076,7 @@ export function TimetablePage({
                 entriesByRoom, `${timetableName}_batch.xlsx`,
                 store.hiddenDays, true, viewStart, viewEnd, true,
                 selectedPath, store.theme, store.bandedRows,
+                exportPresentation,
               );
               messageApi.success(`Exported batch room timetable to ${selectedPath.split(/[\\/]/).pop()}`);
             } catch (e: unknown) {
@@ -3066,6 +3176,18 @@ export function TimetablePage({
               </div>
             </>
           )}
+
+{exportRoomModalOpen && (
+          <Suspense fallback={null}>
+            <ExportPresentationSettings
+              value={exportPresentation}
+              onChange={(next) => {
+                setExportPresentation(next);
+                saveExportPresentation(next);
+              }}
+            />
+          </Suspense>
+        )}
         </Space>
       </Modal>
 

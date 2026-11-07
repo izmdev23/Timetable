@@ -97,8 +97,25 @@ export interface TimetableStore {
   rowHeights: Record<number, number>;
   globalColWidth: number;
   globalRowHeight: number;
+  verticalAlignment: 'top' | 'middle' | 'bottom';
+  horizontalAlignment: 'left' | 'center' | 'right';
   commitCellSizes: (newColumnWidths: Record<string, number>, newRowHeights: Record<number, number>) => void;
   applyGlobalCellSizing: (width: number, height: number) => void;
+  commitState: (
+    newBlueprints: SubjectEntry[],
+    newInstances: SubjectEntry[],
+    newEditingEntryId: string | null,
+    newFormState: FormState,
+    isUndoRedoOperation?: boolean,
+    newHiddenDays?: DayOfWeek[],
+    newColumnWidths?: Record<string, number>,
+    newRowHeights?: Record<number, number>,
+    newGlobalColWidth?: number,
+    newGlobalRowHeight?: number,
+    newVerticalAlignment?: 'top' | 'middle' | 'bottom',
+    newHorizontalAlignment?: 'left' | 'center' | 'right',
+    source?: 'local' | 'remote'
+  ) => void;
   updateTheme: (theme: string) => Promise<void>;
   updateBandedRows: (banded: boolean) => Promise<void>;
   suggestions: {
@@ -149,6 +166,8 @@ interface HistorySnapshot {
   rowHeights: Record<number, number>;
   globalColWidth: number;
   globalRowHeight: number;
+  verticalAlignment: 'top' | 'middle' | 'bottom';
+  horizontalAlignment: 'left' | 'center' | 'right';
 }
 
 function migrateEntries(parsed: unknown): { blueprints: SubjectEntry[]; instances: SubjectEntry[] } {
@@ -250,6 +269,20 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   });
   const globalRowHeightRef = useRef(globalRowHeight);
   globalRowHeightRef.current = globalRowHeight;
+
+  const [verticalAlignment, setVerticalAlignmentState] = useState<'top' | 'middle' | 'bottom'>(() => {
+    const saved = localStorage.getItem('timetable_vertical_alignment');
+    return (saved as 'top' | 'middle' | 'bottom') ?? 'middle';
+  });
+  const verticalAlignmentRef = useRef(verticalAlignment);
+  verticalAlignmentRef.current = verticalAlignment;
+
+  const [horizontalAlignment, setHorizontalAlignmentState] = useState<'left' | 'center' | 'right'>(() => {
+    const saved = localStorage.getItem('timetable_horizontal_alignment');
+    return (saved as 'left' | 'center' | 'right') ?? 'center';
+  });
+  const horizontalAlignmentRef = useRef(horizontalAlignment);
+  horizontalAlignmentRef.current = horizontalAlignment;
 
   // Refs for queue/collab persistence (always-current snapshots)
   const blueprintsRef = useRef(blueprints);
@@ -527,6 +560,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
             rowHeights: rowHeightsRef.current,
             globalColWidth: globalColWidthRef.current,
             globalRowHeight: globalRowHeightRef.current,
+            verticalAlignment: verticalAlignmentRef.current,
+            horizontalAlignment: horizontalAlignmentRef.current,
           }];
           historyIndexRef.current = 0;
           updateHistoryState();
@@ -546,6 +581,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
             rowHeights: rowHeightsRef.current,
             globalColWidth: globalColWidthRef.current,
             globalRowHeight: globalRowHeightRef.current,
+            verticalAlignment: verticalAlignmentRef.current,
+            horizontalAlignment: horizontalAlignmentRef.current,
           }];
           historyIndexRef.current = 0;
           updateHistoryState();
@@ -584,6 +621,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       newRowHeights: Record<number, number> = rowHeightsRef.current,
       newGlobalColWidth: number = globalColWidthRef.current,
       newGlobalRowHeight: number = globalRowHeightRef.current,
+      newVerticalAlignment: 'top' | 'middle' | 'bottom' = verticalAlignmentRef.current,
+      newHorizontalAlignment: 'left' | 'center' | 'right' = horizontalAlignmentRef.current,
       source: 'local' | 'remote' = 'local'
     ): void => {
       setBlueprints(newBlueprints);
@@ -595,11 +634,15 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       setRowHeightsState(newRowHeights);
       setGlobalColWidthState(newGlobalColWidth);
       setGlobalRowHeightState(newGlobalRowHeight);
+      setVerticalAlignmentState(newVerticalAlignment);
+      setHorizontalAlignmentState(newHorizontalAlignment);
 
       localStorage.setItem('timetable_column_widths', JSON.stringify(newColumnWidths));
       localStorage.setItem('timetable_row_heights', JSON.stringify(newRowHeights));
       localStorage.setItem('timetable_global_col_width', String(newGlobalColWidth));
       localStorage.setItem('timetable_global_row_height', String(newGlobalRowHeight));
+      localStorage.setItem('timetable_vertical_alignment', newVerticalAlignment);
+      localStorage.setItem('timetable_horizontal_alignment', newHorizontalAlignment);
 
       setIsDirtyAndDispatch(true);
 
@@ -614,7 +657,9 @@ export function useTimetableStore(timetableId: string): TimetableStore {
           columnWidths: newColumnWidths,
           rowHeights: newRowHeights,
           globalColWidth: newGlobalColWidth,
-          globalRowHeight: newGlobalRowHeight
+          globalRowHeight: newGlobalRowHeight,
+          verticalAlignment: newVerticalAlignment,
+          horizontalAlignment: newHorizontalAlignment,
         });
         historyRef.current = newHistory;
         historyIndexRef.current = newHistory.length - 1;
@@ -634,7 +679,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
 
   const addBlueprints = useCallback((entries: SubjectEntry[], source: 'local' | 'remote' = 'local'): void => {
     const nextBlueprints = [...entries, ...blueprints];
-    commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+    commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
     if (source === 'local' && enqueueCommitRef.current) {
       enqueueCommitRef.current({ op: 'addBlueprints', payload: { entries } }, `Added ${entries.length} blueprint(s)`);
     }
@@ -643,7 +688,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const addBlueprintsAndInstances = useCallback((newBps: SubjectEntry[], newInsts: SubjectEntry[], source: 'local' | 'remote' = 'local'): void => {
     const nextBlueprints = [...newBps, ...blueprints];
     const nextInstances = [...newInsts, ...instances];
-    commitState(nextBlueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+    commitState(nextBlueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
     if (source === 'local' && enqueueCommitRef.current) {
       const count = newBps.length + newInsts.length;
       enqueueCommitRef.current({ op: 'addBlueprintsAndInstances', payload: { blueprints: newBps, instances: newInsts } }, `Added ${count} entry(ies)`);
@@ -652,14 +697,14 @@ export function useTimetableStore(timetableId: string): TimetableStore {
 
   const persistState = useCallback(
     (newBlueprints: SubjectEntry[], newInstances: SubjectEntry[], isUndoRedoOperation = false, source: 'local' | 'remote' = 'local'): void => {
-      commitState(newBlueprints, newInstances, editingEntryId, formState, isUndoRedoOperation, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(newBlueprints, newInstances, editingEntryId, formState, isUndoRedoOperation, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
     },
     [commitState, editingEntryId, formState, hiddenDays],
   );
 
   const setHiddenDays = useCallback(
     (_days: DayOfWeek[], source: 'local' | 'remote' = 'local'): void => {
-      commitState(blueprints, instances, editingEntryId, formState, false, _days, undefined, undefined, undefined, undefined, source);
+      commitState(blueprints, instances, editingEntryId, formState, false, _days, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         enqueueCommitRef.current({ op: 'setHiddenDays', payload: { days: _days } }, `Updated hidden days`);
       }
@@ -732,7 +777,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
       const nextBlueprints = existing
         ? blueprints.map((e) => (e.id === entry.id ? entry : e))
         : [entry, ...blueprints];
-      commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(nextBlueprints, instances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         enqueueCommitRef.current({ op: 'addBlueprint', payload: { entry } }, `Added blueprint ${entry.subjectCode}`);
       }
@@ -744,7 +789,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const addInstance = useCallback(
     (entry: SubjectEntry, source: 'local' | 'remote' = 'local'): ConflictInfo[] => {
       const nextInstances = [entry, ...instances];
-      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         enqueueCommitRef.current({ op: 'addInstance', payload: { entry } }, `Added instance ${entry.subjectCode}`);
       }
@@ -756,7 +801,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
   const addInstances = useCallback(
     (entries: SubjectEntry[], source: 'local' | 'remote' = 'local'): ConflictInfo[][] => {
       const nextInstances = [...entries, ...instances];
-      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         enqueueCommitRef.current({ op: 'addInstances', payload: { entries } }, `Added ${entries.length} instance(s)`);
       }
@@ -829,7 +874,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         });
       }
 
-      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(blueprints, nextInstances, null, DEFAULT_FORM_STATE, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         enqueueCommitRef.current({ op: 'updateInstance', payload: { entry, editedScheduleId } }, `Updated instance ${entry.subjectCode}`);
       }
@@ -858,7 +903,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         void deleteDynamicData(link.id);
       }
 
-      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         const entry = blueprints.find((e) => e.id === id);
         enqueueCommitRef.current({ op: 'deleteBlueprint', payload: { id } }, `Deleted blueprint ${entry?.subjectCode || id}`);
@@ -888,7 +933,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         void deleteDynamicData(link.id);
       }
 
-      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(nextBlueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         enqueueCommitRef.current({ op: 'deleteBlueprints', payload: { ids } }, `Deleted ${ids.length} blueprint(s)`);
       }
@@ -909,7 +954,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         deleteDynamicData(link.id);
       }
 
-      commitState(blueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, source);
+      commitState(blueprints, nextInstances, nextEditingEntryId, nextFormState, false, hiddenDays, undefined, undefined, undefined, undefined, undefined, undefined, source);
       if (source === 'local' && enqueueCommitRef.current) {
         const entry = instances.find((e) => e.id === id);
         enqueueCommitRef.current({ op: 'deleteInstance', payload: { id } }, `Deleted instance ${entry?.subjectCode || id}`);
@@ -1300,6 +1345,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         newState.rowHeights,
         newState.globalColWidth,
         newState.globalRowHeight,
+        newState.verticalAlignment,
+        newState.horizontalAlignment,
         'local'
       );
       setDynamicData(newState.dynamicData);
@@ -1337,7 +1384,9 @@ export function useTimetableStore(timetableId: string): TimetableStore {
         newState.columnWidths,
         newState.rowHeights,
         newState.globalColWidth,
-        newState.globalRowHeight
+        newState.globalRowHeight,
+        newState.verticalAlignment,
+        newState.horizontalAlignment
       );
       setDynamicData(newState.dynamicData);
       void syncDynamicData(newState.dynamicData);
@@ -1373,6 +1422,8 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     rowHeights,
     globalColWidth,
     globalRowHeight,
+    verticalAlignment,
+    horizontalAlignment,
     commitCellSizes,
     applyGlobalCellSizing,
     isLoading,
@@ -1419,6 +1470,7 @@ export function useTimetableStore(timetableId: string): TimetableStore {
     addBlueprintsAndInstances,
     mergeBlueprints,
     mergeDynamicData,
+    commitState,
 
     // Collaboration / Queue
     applyRemoteAction,

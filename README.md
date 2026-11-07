@@ -1,32 +1,55 @@
-# React + TypeScript + Vite
+# Welcome to Timetable
+**About Timetable**
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Managing room schedules for academic use is difficult and painful as more establishment gets involved. Imagine having to assign rooms to hundreds or even thousands of teachers.
 
-Currently, two official plugins are available:
+Timetable is created to address that problem. It even has a built-in local network collab feature so that multiple people can work on assigning schedules at the same time.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+**How does it work?**
 
-## React Compiler
+Timetable utilizes *tables* to visualize schedules. Within a table is a collection of *blocks*. Each block represents a schedule
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+![Alt Text](public\readme\table.png)
+*This is a table that contains blocks*
 
-## Expanding the Oxlint configuration
+Timetable can also have multiple tables within a single Timetable file (.ttcl) similar to a worksheet in a spreadsheet app. This can be used to organize multiple rooms or establishment with different schedules all through the week.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## Installation
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+**From an executable file**
+1. Download the latest *.exe* file in this repo.
+```
+https://github.com/izmdev23/Timetable/releases/tag/release
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+2. After download completes, just click it and it should open without installations. If you want an installer, you can built the project from source. See instructions below.
+
+**How to build from source.**
+1. Clone the repository.
+
+```bash
+git clone https://github.com/izmdev23/Timetable.git
+```
+
+2. Go to the project directory.
+```bash
+cd Timetable
+```
+
+3. Install the required modules.
+```node
+npm install
+```
+
+4. Build the project.
+```node
+npm run tauri build
+```
+
+5. After build is successful, the executable file is inside this directory named app.exe:
+```
+cd src-tauri\target\release
+```
+
+## Supported platforms
+Currently the project only supports windows. You can extend the project to support to any platforms you want.

@@ -1,43 +1,14 @@
-import { useState } from 'react';
-import {
-  Layout,
-  Typography,
-  Button,
-  Modal,
-  Input,
-  Card,
-  Row,
-  Col,
-  Dropdown,
-  Popconfirm,
-  Empty,
-  Spin,
-  Tag,
-  Space,
-  message,
-  Checkbox,
-  Select,
-  AutoComplete,
-} from 'antd';
-import {
-  PlusOutlined,
-  FolderOpenOutlined,
-  DeleteOutlined,
-  DownloadOutlined,
-  FileExcelOutlined,
-  FileTextOutlined,
-  ClockCircleOutlined,
-  EditOutlined,
-  CalendarOutlined,
-  CloseOutlined,
-  FileAddOutlined,
-} from '@ant-design/icons';
+﻿import { Plus, FolderOpen, X, Download, File, FileText, Clock, Edit, Calendar, FilePlus } from 'lucide-react';
+import { Layout, Typography, Button, Row, Col, Card, Tag, Spin, Space, Dropdown, Popconfirm, Empty, Modal, Input, Checkbox, Select, AutoComplete, message } from 'antd';
 import Database from '@tauri-apps/plugin-sql';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
+import { useState, Suspense } from 'react';
 import { useTimetableList } from '../hooks/useTimetableList';
 import { useCollection } from '../hooks/useCollectionContext';
 import { exportToXlsx } from '../utils/exportXlsx';
+import type { ExportPresentationOptions } from '../utils/exportXlsx';
+import { ExportPresentationSettings, loadExportPresentation, saveExportPresentation } from '../components/ExportPresentationSettings';
 import type { TimetableMeta, SubjectEntry, DayOfWeek } from '../types';
 
 const { Content } = Layout;
@@ -104,7 +75,7 @@ export function HomePage({ onOpen }: HomePageProps) {
   const collection = useCollection();
   const [messageApi, contextHolder] = message.useMessage();
 
-  // ── Create Collection modal ────────────────────────────────────────────
+  // â”€â”€ Create Collection modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [createCollectionModalOpen, setCreateCollectionModalOpen] = useState(false);
   const [createCollectionName, setCreateCollectionName] = useState('');
   const [creatingCollection, setCreatingCollection] = useState(false);
@@ -138,7 +109,7 @@ export function HomePage({ onOpen }: HomePageProps) {
     }
   }
 
-  // ── Open Collection ────────────────────────────────────────────────────
+  // â”€â”€ Open Collection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleOpenCollection(): Promise<void> {
     try {
       const filePath = await openDialog({
@@ -160,7 +131,7 @@ export function HomePage({ onOpen }: HomePageProps) {
     }
   }
 
-  // ── Open recent collection ─────────────────────────────────────────────
+  // â”€â”€ Open recent collection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleOpenRecent(path: string): Promise<void> {
     try {
       const timetables = await collection.openCollection(path);
@@ -174,13 +145,13 @@ export function HomePage({ onOpen }: HomePageProps) {
     }
   }
 
-  // ── Close Collection ────────────────────────────────────────────────────
+  // â”€â”€ Close Collection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   async function handleCloseCollection(): Promise<void> {
     await collection.closeCollection();
     await list.refresh();
   }
 
-  // ── New Timetable (within collection) ──────────────────────────────────
+  // â”€â”€ New Timetable (within collection) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [newTimetableModalOpen, setNewTimetableModalOpen] = useState(false);
   const [newTimetableName, setNewTimetableName] = useState('');
   const [creatingTimetable, setCreatingTimetable] = useState(false);
@@ -201,13 +172,13 @@ export function HomePage({ onOpen }: HomePageProps) {
     }
   }
 
-  // ── Rename modal ──────────────────────────────────────────────────────────
+  // â”€â”€ Rename modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [renameModalOpen, setRenameModalOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<TimetableMeta | null>(null);
   const [renameName, setRenameName] = useState('');
   const [renaming, setRenaming] = useState(false);
 
-  // ── Export configuration states ───────────────────────────────────────────
+  // â”€â”€ Export configuration states â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportTarget, setExportTarget] = useState<TimetableMeta | null>(null);
   const [exportFormat, setExportFormat] = useState<'json' | 'xlsx'>('xlsx');
@@ -219,6 +190,7 @@ export function HomePage({ onOpen }: HomePageProps) {
   const [exportSelectedRoom, setExportSelectedRoom] = useState<string>('');
   const [exportExactMatch, setExportExactMatch] = useState(false);
   const [availableRooms, setAvailableRooms] = useState<string[]>([]);
+  const [exportPresentation, setExportPresentation] = useState<ExportPresentationOptions>(() => loadExportPresentation());
 
   function openRenameModal(t: TimetableMeta): void {
     setRenameTarget(t);
@@ -323,7 +295,8 @@ export function HomePage({ onOpen }: HomePageProps) {
         await exportToXlsx(
           entriesToProcess, `${exportTarget.name}.xlsx`,
           exportTarget.hiddenDays, excludeHiddenDays, viewStart, viewEnd, excludeTimeWindow,
-          undefined, exportTheme,
+          undefined, exportTheme, true,
+          exportPresentation,
         );
       }
     } catch (e: unknown) {
@@ -347,8 +320,8 @@ export function HomePage({ onOpen }: HomePageProps) {
   }
 
   const exportItems = (t: TimetableMeta) => [
-    { key: 'xlsx', label: 'Export as Excel (.xlsx)', icon: <FileExcelOutlined />, onClick: () => startExport(t, 'xlsx') },
-    { key: 'json', label: 'Export as JSON', icon: <FileTextOutlined />, onClick: () => startExport(t, 'json') },
+    { key: 'xlsx', label: 'Export as Excel (.xlsx)', icon: <File />, onClick: () => startExport(t, 'xlsx') },
+    { key: 'json', label: 'Export as JSON', icon: <FileText />, onClick: () => startExport(t, 'json') },
   ];
 
   const showTimetableGrid = collection.isCollectionOpen && list.timetables.length > 0;
@@ -360,7 +333,7 @@ export function HomePage({ onOpen }: HomePageProps) {
 
       <Content style={{ padding: '24px 28px 16px' }}>
         <div style={{ maxWidth: 960, margin: '0 auto' }}>
-          {/* ── Collection Header ──────────────────────────────────────── */}
+          {/* â”€â”€ Collection Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div>
@@ -375,7 +348,7 @@ export function HomePage({ onOpen }: HomePageProps) {
               </div>
               {collection.isCollectionOpen && (
                 <Button
-                  icon={<CloseOutlined />}
+                  icon={<X />}
                   size="small"
                   onClick={handleCloseCollection}
                   style={{ color: 'rgba(255,255,255,0.6)', borderColor: 'rgba(255,255,255,0.2)' }}
@@ -385,12 +358,12 @@ export function HomePage({ onOpen }: HomePageProps) {
               )}
             </div>
 
-            {/* ── Action Buttons ─────────────────────────────────────── */}
+            {/* â”€â”€ Action Buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
             <div style={{ marginTop: 16, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               {!collection.isCollectionOpen && (
                 <Button
                   type="primary"
-                  icon={<PlusOutlined />}
+icon={<Plus />}
                   size="middle"
                   onClick={() => { setCreateCollectionName(''); setCreateCollectionModalOpen(true); }}
                   style={{
@@ -404,7 +377,7 @@ export function HomePage({ onOpen }: HomePageProps) {
                 </Button>
               )}
               <Button
-                icon={<FolderOpenOutlined />}
+                icon={<FolderOpen />}
                 size="middle"
                 onClick={handleOpenCollection}
                 style={{
@@ -418,7 +391,7 @@ export function HomePage({ onOpen }: HomePageProps) {
               </Button>
               {collection.isCollectionOpen && (
                 <Button
-                  icon={<FileAddOutlined />}
+                  icon={<FilePlus />}
                   size="middle"
                   onClick={() => { setNewTimetableName(''); setNewTimetableModalOpen(true); }}
                   style={{
@@ -434,7 +407,7 @@ export function HomePage({ onOpen }: HomePageProps) {
             </div>
           </div>
 
-          {/* ── Recent Collections ──────────────────────────────────────── */}
+          {/* â”€â”€ Recent Collections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           {collection.recentCollections.length > 0 && (
             <>
               <Text style={{ color: 'rgba(255,255,255,0.4)', fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, display: 'block', marginBottom: 12 }}>
@@ -455,14 +428,14 @@ export function HomePage({ onOpen }: HomePageProps) {
                       styles={{ body: { padding: '12px 16px' } }}
                     >
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                        <div style={{
-                          width: 30, height: 30, borderRadius: 8,
-                          background: 'linear-gradient(135deg, #3B82F6, #1E3560)',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                        }}>
-                          <CalendarOutlined style={{ fontSize: 14, color: '#FFF' }} />
+<div style={{
+                            width: 30, height: 30, borderRadius: 8,
+                            background: 'linear-gradient(135deg, #3B82F6, #1E3560)',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                          }}>
+                            <Calendar style={{ fontSize: 14, color: '#FFF' }} />
+                          </div>
                         </div>
-                      </div>
                       <Title level={5} style={{ color: '#FFFFFF', margin: '0 0 3px', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.name}>
                         {r.name}
                       </Title>
@@ -471,12 +444,12 @@ export function HomePage({ onOpen }: HomePageProps) {
                           {r.timetableCount} timetable{r.timetableCount !== 1 ? 's' : ''}
                         </Tag>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <ClockCircleOutlined style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }} />
-                        <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
-                          {formatTimeAgo(r.lastOpened)}
-                        </Text>
-                      </div>
+<div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                          <Clock style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }} />
+                          <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
+                            {formatTimeAgo(r.lastOpened)}
+                          </Text>
+                        </div>
                     </Card>
                   </Col>
                 ))}
@@ -484,7 +457,7 @@ export function HomePage({ onOpen }: HomePageProps) {
             </>
           )}
 
-          {/* ── Timetable Grid (within current collection) ───────────── */}
+          {/* â”€â”€ Timetable Grid (within current collection) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
           {list.isLoading ? (
             <div style={{ textAlign: 'center', paddingTop: 40 }}>
               <Spin size="large" />
@@ -514,20 +487,20 @@ export function HomePage({ onOpen }: HomePageProps) {
                           background: 'linear-gradient(135deg, #3B82F6, #1E3560)',
                           display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                         }}>
-                          <CalendarOutlined style={{ fontSize: 14, color: '#FFF' }} />
+                          <Calendar style={{ fontSize: 14, color: '#FFF' }} />
                         </div>
                         <Space size={4} onClick={(e) => e.stopPropagation()}>
-                          <Button type="text" icon={<EditOutlined />} size="small" title="Rename"
+                          <Button type="text" icon={<Edit />} size="small" title="Rename"
                             className="action-btn-hover" style={{ color: 'rgba(255,255,255,0.45)' }}
                             onClick={() => openRenameModal(t)} />
                           <Dropdown menu={{ items: exportItems(t) }} trigger={['click']}>
-                            <Button type="text" icon={<DownloadOutlined />} size="small" title="Export"
+                            <Button type="text" icon={<Download />} size="small" title="Export"
                               className="action-btn-hover" disabled={t.entryCount === 0}
                               style={{ color: 'rgba(255,255,255,0.45)' }} />
                           </Dropdown>
                           <Popconfirm title="Delete this timetable?" description="This action cannot be undone."
                             onConfirm={() => handleDelete(t.id)} okText="Delete" okButtonProps={{ danger: true }}>
-                            <Button type="text" icon={<DeleteOutlined />} size="small" danger title="Delete"
+                            <Button type="text" icon={<X />} size="small" danger title="Delete"
                               className="action-btn-hover" style={{ color: 'rgba(255,100,100,0.6)' }} />
                           </Popconfirm>
                         </Space>
@@ -541,7 +514,7 @@ export function HomePage({ onOpen }: HomePageProps) {
                         </Tag>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <ClockCircleOutlined style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }} />
+                        <Clock style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }} />
                         <Text style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>
                           Updated {formatDate(t.updatedAt)}
                         </Text>
@@ -561,7 +534,7 @@ export function HomePage({ onOpen }: HomePageProps) {
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
               />
               <Button
-                type="primary" icon={<PlusOutlined />}
+                type="primary" icon={<Plus />}
                 onClick={() => { setNewTimetableName(''); setNewTimetableModalOpen(true); }}
                 style={{ marginTop: 12 }}
               >
@@ -584,7 +557,7 @@ export function HomePage({ onOpen }: HomePageProps) {
         </div>
       </Content>
 
-      {/* ── Create Collection Modal ───────────────────────────────────── */}
+      {/* â”€â”€ Create Collection Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <Modal
         title="Create Collection"
         open={createCollectionModalOpen}
@@ -597,7 +570,7 @@ export function HomePage({ onOpen }: HomePageProps) {
       >
         <div style={{ paddingTop: 8 }}>
           <Text style={{ display: 'block', marginBottom: 8, color: '#555' }}>
-            Give your collection a name (e.g. "Semester 1 – 2025")
+            Give your collection a name (e.g. "Semester 1 â€“ 2025")
           </Text>
           <Input
             placeholder="Collection name"
@@ -610,7 +583,7 @@ export function HomePage({ onOpen }: HomePageProps) {
         </div>
       </Modal>
 
-      {/* ── New Timetable Modal ──────────────────────────────────────────── */}
+      {/* â”€â”€ New Timetable Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <Modal
         title="New Timetable"
         open={newTimetableModalOpen}
@@ -636,7 +609,7 @@ export function HomePage({ onOpen }: HomePageProps) {
         </div>
       </Modal>
 
-      {/* ── Rename Modal ─────────────────────────────────────────────────── */}
+      {/* â”€â”€ Rename Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <Modal
         title="Rename Timetable"
         open={renameModalOpen}
@@ -659,7 +632,7 @@ export function HomePage({ onOpen }: HomePageProps) {
         </div>
       </Modal>
 
-      {/* ── Export Options Modal ─────────────────────────────────────────── */}
+      {/* â”€â”€ Export Options Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */}
       <Modal
         title="Export Timetable Options"
         open={exportModalOpen}
@@ -727,9 +700,21 @@ export function HomePage({ onOpen }: HomePageProps) {
                 </>
               )}
             </div>
+{exportModalOpen && (
+              <Suspense fallback={null}>
+                <ExportPresentationSettings
+                  value={exportPresentation}
+                  onChange={(next) => {
+                    setExportPresentation(next);
+                    saveExportPresentation(next);
+                  }}
+                />
+              </Suspense>
+            )}
           </div>
         </div>
       </Modal>
     </Layout>
   );
 }
+

@@ -1,25 +1,12 @@
 import { Button, Select, Checkbox, Space, Divider, Typography, Tooltip, Drawer, Form, Input, InputNumber, Tabs, Card, Dropdown, message, Modal } from 'antd';
 import { Sketch } from '@uiw/react-color';
-import {
-  SaveOutlined,
-  DownloadOutlined,
-  UploadOutlined,
-  PlusOutlined,
-  UndoOutlined,
-  RedoOutlined,
-  LinkOutlined,
-  FilterOutlined,
-  UserOutlined,
-  SolutionOutlined,
-  HomeOutlined,
-  BgColorsOutlined,
-  TeamOutlined,
-} from '@ant-design/icons';
+import { Save, Download, Upload, Plus, Undo, Redo, Link, Filter, User, Home, Palette, Users, LogIn, LogOut } from 'lucide-react';
 import type { DayOfWeek } from '../types';
 import { DAY_ORDER } from '../types';
 import { useState, useEffect } from 'react';
 import type { DynamicData } from '../types';
 import { formatInstructorValue, parseInstructorValue, formatInstructorDisplay } from '../utils/teacherName';
+import { AlignmentControls } from './AlignmentControls';
 
 const { Text } = Typography;
 import { Tag } from 'antd';
@@ -90,6 +77,12 @@ interface RibbonToolbarProps {
   globalRowHeight: number;
   onApplyGlobalCellSizing: (width: number, height: number) => void;
 
+  // Alignment
+  verticalAlignment: 'top' | 'middle' | 'bottom';
+  onVerticalAlignmentChange: (val: 'top' | 'middle' | 'bottom') => void;
+  horizontalAlignment: 'left' | 'center' | 'right';
+  onHorizontalAlignmentChange: (val: 'left' | 'center' | 'right') => void;
+
   // Collaboration
   isCollabConnected?: boolean;
   onHostSession?: () => void;
@@ -133,6 +126,10 @@ export function RibbonToolbar({
   onAddSubjectEntry,
   linkingModeActive,
   onToggleLinkingMode,
+  verticalAlignment,
+  onVerticalAlignmentChange,
+  horizontalAlignment,
+  onHorizontalAlignmentChange,
 
   dynamicData,
   addDynamicData,
@@ -157,6 +154,7 @@ export function RibbonToolbar({
   const [colWidthInput, setColWidthInput] = useState<number>(globalColWidth);
   const [rowHeightInput, setRowHeightInput] = useState<number>(globalRowHeight);
 
+  // Alignment state
   useEffect(() => { setColWidthInput(globalColWidth); }, [globalColWidth]);
   useEffect(() => { setRowHeightInput(globalRowHeight); }, [globalRowHeight]);
 
@@ -230,6 +228,7 @@ export function RibbonToolbar({
   };
   return (
     <div
+      className="ribbon-bar"
       style={{
         background: '#FFFFFF',
         borderBottom: '1px solid #D0D7E3',
@@ -250,18 +249,18 @@ export function RibbonToolbar({
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
         <Space size={2}>
           <Tooltip title="Save Collection (Ctrl+S)">
-            <Button icon={<SaveOutlined />} onClick={onSave} style={{ padding: '6px 8px', fontSize: 12 }} />
+            <Button icon={<Save />} onClick={onSave} style={{ padding: '6px 8px', fontSize: 12 }} />
           </Tooltip>
           <Tooltip title="Save As / Export (Ctrl+Shift+S)">
-            <Button icon={<DownloadOutlined />} onClick={onSaveAs} style={{ padding: '6px 8px', fontSize: 12 }} />
+            <Button icon={<Download />} onClick={onSaveAs} style={{ padding: '6px 8px', fontSize: 12 }} />
           </Tooltip>
           <Tooltip title="Import & Merge JSON Data">
-            <Button icon={<UploadOutlined />} onClick={onImportMerge} style={{ padding: '6px 8px', fontSize: 12 }} />
+            <Button icon={<Upload />} onClick={onImportMerge} style={{ padding: '6px 8px', fontSize: 12 }} />
           </Tooltip>
         </Space>
         <Space size={2}>
-          <Button icon={<UndoOutlined />} disabled={!canUndo} onClick={onUndo} style={{ padding: '4px 8px', fontSize: 11, height: 24 }} />
-          <Button icon={<RedoOutlined />} disabled={!canRedo} onClick={onRedo} style={{ padding: '4px 8px', fontSize: 11, height: 24 }} />
+          <Button icon={<Undo />} disabled={!canUndo} onClick={onUndo} style={{ padding: '4px 8px', fontSize: 11, height: 24 }} />
+          <Button icon={<Redo />} disabled={!canRedo} onClick={onRedo} style={{ padding: '4px 8px', fontSize: 11, height: 24 }} />
         </Space>
         <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>FILE</Text>
       </div>
@@ -273,14 +272,14 @@ export function RibbonToolbar({
         <Space size={2}>
           <Button
             type="primary"
-            icon={<PlusOutlined />}
+            icon={<Plus />}
             onClick={onAddSubjectEntry}
             style={{ background: '#2B4C7E', borderColor: '#2B4C7E', width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
           >
             <span>Subject</span>
           </Button>
           <Button
-            icon={<PlusOutlined />}
+            icon={<Plus />}
             onClick={() => setDrawerOpen(true)}
             style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
           >
@@ -289,7 +288,7 @@ export function RibbonToolbar({
           <Button
             type={linkingModeActive ? 'primary' : 'default'}
             danger={linkingModeActive}
-            icon={<LinkOutlined />}
+            icon={<Link />}
             onClick={onToggleLinkingMode}
             style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
           >
@@ -297,47 +296,6 @@ export function RibbonToolbar({
           </Button>
         </Space>
         <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>INSERT</Text>
-      </div>
-
-      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
-
-      {/* Collaboration */}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-        <Space size={2}>
-          <Tooltip title="Host Session">
-            <Button
-              icon={<TeamOutlined />}
-              onClick={onHostSession}
-              disabled={isCollabConnected}
-              style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
-            >
-              <span>Host</span>
-            </Button>
-          </Tooltip>
-          <Tooltip title="Join Session">
-            <Button
-              icon={<TeamOutlined />}
-              onClick={onJoinSession}
-              disabled={isCollabConnected}
-              style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
-            >
-              <span>Join</span>
-            </Button>
-          </Tooltip>
-          {isCollabConnected && (
-            <Tooltip title="Leave Session">
-              <Button
-                danger
-                icon={<TeamOutlined />}
-                onClick={onLeaveSession}
-                style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
-              >
-                <span>Leave</span>
-              </Button>
-            </Tooltip>
-          )}
-        </Space>
-        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>COLLAB</Text>
       </div>
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
@@ -350,10 +308,10 @@ export function RibbonToolbar({
             onChange={onFilterTypeChange}
             style={{ width: 110 }}
             options={[
-              { label: <span><FilterOutlined style={{ marginRight: 6, color: '#1890ff' }} />All</span>, value: 'all' },
-              { label: <span><UserOutlined style={{ marginRight: 6, color: '#722ed1' }} />Student</span>, value: 'student' },
-              { label: <span><SolutionOutlined style={{ marginRight: 6, color: '#fa8c16' }} />Instructor</span>, value: 'teacher' },
-              { label: <span><HomeOutlined style={{ marginRight: 6, color: '#52c41a' }} />Room</span>, value: 'room' },
+              { label: <span><Filter style={{ marginRight: 6, color: '#1890ff' }} />All</span>, value: 'all' },
+              { label: <span><User style={{ marginRight: 6, color: '#722ed1' }} />Student</span>, value: 'student' },
+              { label: <span><User style={{ marginRight: 6, color: '#fa8c16' }} />Instructor</span>, value: 'teacher' },
+              { label: <span><Home style={{ marginRight: 6, color: '#52c41a' }} />Room</span>, value: 'room' },
             ]}
           />
           {filterType === 'student' && (
@@ -362,10 +320,10 @@ export function RibbonToolbar({
               onChange={onSelectedStudentKeyChange}
               style={{ width: 140 }}
               options={studentSchedules.map(opt => ({
-                label: <span><UserOutlined style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
+                label: <span><User style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
                 value: opt.value
               }))}
-              placeholder={<span><UserOutlined style={{ marginRight: 6 }} />Student</span>}
+              placeholder={<span><User style={{ marginRight: 6 }} />Student</span>}
               disabled={studentSchedules.length === 0}
             />
           )}
@@ -379,10 +337,10 @@ export function RibbonToolbar({
               onChange={onSelectedTeacherChange}
               style={{ width: 140 }}
               options={teacherOptions.map(opt => ({
-                label: <span><SolutionOutlined style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
+                label: <span><User style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
                 value: opt.value
               }))}
-              placeholder={<span><SolutionOutlined style={{ marginRight: 6 }} />Instructor</span>}
+              placeholder={<span><User style={{ marginRight: 6 }} />Instructor</span>}
               disabled={teacherOptions.length === 0}
             />
           )}
@@ -394,9 +352,9 @@ export function RibbonToolbar({
                 value={selectedRooms}
                 onChange={onSelectedRoomsChange}
                 style={{ width: 140 }}
-                placeholder={<span><HomeOutlined style={{ marginRight: 6 }} />Rooms</span>}
+                placeholder={<span><Home style={{ marginRight: 6 }} />Rooms</span>}
                 options={[{ label: 'All', value: 'all' }, ...roomOptions].map(opt => ({
-                  label: <span><HomeOutlined style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
+                  label: <span><Home style={{ marginRight: 6, color: '#8c8c8c' }} />{opt.label}</span>,
                   value: opt.value
                 }))}
                 maxTagCount="responsive"
@@ -416,7 +374,7 @@ export function RibbonToolbar({
               }
             }}
             style={{ width: 140 }}
-            suffixIcon={<BgColorsOutlined />}
+            suffixIcon={<Palette />}
             options={(() => {
               const options = [
                 { label: (
@@ -484,6 +442,19 @@ export function RibbonToolbar({
           </Checkbox>
         </Space>
         <Text style={{ fontSize: 10, color: '#7A8BA8', fontWeight: 600 }}>VIEW CONTROLS</Text>
+      </div>
+
+      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
+
+      {/* Alignment */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+        <AlignmentControls
+          verticalAlignment={verticalAlignment}
+          onVerticalAlignmentChange={onVerticalAlignmentChange}
+          horizontalAlignment={horizontalAlignment}
+          onHorizontalAlignmentChange={onHorizontalAlignmentChange}
+        />
+        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>ALIGNMENT</Text>
       </div>
 
       <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
@@ -570,13 +541,54 @@ export function RibbonToolbar({
           <Tooltip title="Reset to defaults">
             <Button
               size="small"
-              icon={<UndoOutlined />}
+              icon={<Undo />}
               onClick={() => onApplyGlobalCellSizing(130, 36)}
               style={{ marginTop: -2 }}
             />
           </Tooltip>
         </Space>
         <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, marginTop: 2 }}>CELL SIZING</Text>
+      </div>
+
+      <Divider type="vertical" style={{ height: '70%', margin: '0 4px', borderColor: '#D0D7E3' }} />
+
+      {/* Collaboration */}
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
+        <Space size={2}>
+          <Tooltip title="Host Session">
+            <Button
+              icon={<Users />}
+              onClick={onHostSession}
+              disabled={isCollabConnected}
+              style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
+            >
+              <span>Host</span>
+            </Button>
+          </Tooltip>
+          <Tooltip title="Join Session">
+            <Button
+              icon={<LogIn />}
+              onClick={onJoinSession}
+              disabled={isCollabConnected}
+              style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
+            >
+              <span>Join</span>
+            </Button>
+          </Tooltip>
+          {isCollabConnected && (
+            <Tooltip title="Leave Session">
+              <Button
+                danger
+                icon={<LogOut />}
+                onClick={onLeaveSession}
+                style={{ width: 48, height: 48, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 500, padding: 0 }}
+              >
+                <span>Leave</span>
+              </Button>
+            </Tooltip>
+          )}
+        </Space>
+        <Text style={{ fontSize: 9, color: '#7A8BA8', fontWeight: 600, lineHeight: 1 }}>COLLAB</Text>
       </div>
 
       <Drawer

@@ -9,6 +9,28 @@ import { minutesTo12Hr } from './time';
 
 const SLOT_INTERVAL = 30; // minutes
 
+/** Presentation options controlling how the exported workbook looks. */
+export interface ExportPresentationOptions {
+  /** Font size (pt) of the header cells; data cells use fontSize - 1 */
+  fontSize: number;
+  /** Default height (pt) of the grid rows */
+  rowHeight: number;
+  /** Width (Excel column units) of the day columns */
+  columnWidth: number;
+  /** Vertical alignment of cell content: 'top', 'middle', 'bottom' */
+  verticalAlignment: 'top' | 'middle' | 'bottom';
+  /** Horizontal alignment of cell content: 'left', 'center', 'right' */
+  horizontalAlignment: 'left' | 'center' | 'right';
+}
+
+export const DEFAULT_EXPORT_PRESENTATION: ExportPresentationOptions = {
+  fontSize: 10,
+  rowHeight: 34,
+  columnWidth: 26,
+  verticalAlignment: 'middle',
+  horizontalAlignment: 'center',
+};
+
 /** Converts "HH:mm" to minutes */
 function toMin(time: string): number {
   const parts = time.split(':');
@@ -49,24 +71,27 @@ function addSheetToWorkbook(
   rowCount: number,
   theme: string = 'blue',
   bandedRows: boolean = true,
+  presentation: ExportPresentationOptions = DEFAULT_EXPORT_PRESENTATION,
 ): void {
+  const { fontSize, rowHeight, columnWidth, verticalAlignment, horizontalAlignment } = presentation;
+  const dataFontSize = Math.max(6, fontSize - 1);
   const colors = getThemeColors(theme);
   const headerArgb = colors.headerBg.replace('#', 'FF');
   const primaryArgb = colors.primary.replace('#', 'FF');
 
   const worksheet = workbook.addWorksheet(sheetName);
-  worksheet.properties.defaultRowHeight = 34;
+  worksheet.properties.defaultRowHeight = rowHeight;
 
   const columns = [
     { header: 'Time', key: 'time', width: 12 }
   ];
   for (const day of activeDays) {
-    columns.push({ header: day, key: day.toLowerCase(), width: 26 });
+    columns.push({ header: day, key: day.toLowerCase(), width: columnWidth });
   }
   worksheet.columns = columns;
 
   const headerRow = worksheet.getRow(1);
-  headerRow.height = 24;
+  headerRow.height = Math.max(16, rowHeight - 10);
   headerRow.eachCell((cell) => {
     cell.fill = {
       type: 'pattern',
@@ -75,7 +100,7 @@ function addSheetToWorkbook(
     };
     cell.font = {
       name: 'Calibri',
-      size: 10,
+      size: fontSize,
       bold: true,
       color: { argb: 'FFFFFFFF' }
     };
@@ -88,12 +113,14 @@ function addSheetToWorkbook(
     };
   });
 
+  // Pre-set all row heights to ensure consistent sizing for both empty and filled cells
   for (let r = 0; r < rowCount; r++) {
     const rowNumber = r + 2;
     const row = worksheet.getRow(rowNumber);
+    row.height = rowHeight;
     row.getCell(1).value = toTime(startMin + r * SLOT_INTERVAL);
     const timeCell = row.getCell(1);
-    timeCell.font = { name: 'Calibri', size: 9, color: { argb: 'FF7A8BA8' } };
+    timeCell.font = { name: 'Calibri', size: dataFontSize, color: { argb: 'FF7A8BA8' } };
     timeCell.alignment = { horizontal: 'right', vertical: 'middle' };
 
     for (let colNumber = 1; colNumber <= columns.length; colNumber++) {
@@ -116,10 +143,10 @@ function addSheetToWorkbook(
 
   const bottomRowNumber = rowCount + 2;
   const bottomRow = worksheet.getRow(bottomRowNumber);
-  bottomRow.height = 22;
+  bottomRow.height = Math.max(14, rowHeight - 12);
   bottomRow.getCell(1).value = toTime(endMin);
   const bottomTimeCell = bottomRow.getCell(1);
-  bottomTimeCell.font = { name: 'Calibri', size: 9, bold: true, color: { argb: 'FF7A8BA8' } };
+  bottomTimeCell.font = { name: 'Calibri', size: dataFontSize, bold: true, color: { argb: 'FF7A8BA8' } };
   bottomTimeCell.alignment = { horizontal: 'right', vertical: 'middle' };
 
   for (let colNumber = 1; colNumber <= columns.length; colNumber++) {
@@ -227,11 +254,18 @@ function addSheetToWorkbook(
         };
         cell.font = {
           name: 'Calibri',
-          size: 9,
+          size: dataFontSize,
           bold: true,
           color: { argb: fontColor }
         };
-        cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+        cell.alignment = { 
+          horizontal: horizontalAlignment, 
+          vertical: verticalAlignment, 
+          wrapText: true 
+        };
+        // Ensure merged rows also have the correct height
+        const row = worksheet.getRow(r);
+        row.height = rowHeight;
       }
 
       if (endRow > startRow) {
@@ -282,6 +316,7 @@ export async function exportToXlsx(
   targetPath?: string,
   theme: string = 'blue',
   bandedRows: boolean = true,
+  presentation: ExportPresentationOptions = DEFAULT_EXPORT_PRESENTATION,
 ): Promise<void> {
   const activeDays = excludeHiddenDays
     ? DAY_ORDER.filter((d) => !hiddenDays.includes(d))
@@ -292,7 +327,7 @@ export async function exportToXlsx(
   const rowCount = (endMin - startMin) / SLOT_INTERVAL;
 
   const workbook = new ExcelJS.Workbook();
-  addSheetToWorkbook(workbook, 'Timetable', entries, activeDays, startMin, endMin, rowCount, theme, bandedRows);
+  addSheetToWorkbook(workbook, 'Timetable', entries, activeDays, startMin, endMin, rowCount, theme, bandedRows, presentation);
   await saveWorkbook(workbook, filename, targetPath);
 }
 
@@ -311,6 +346,7 @@ export async function exportToXlsxBatch(
   targetPath?: string,
   theme: string = 'blue',
   bandedRows: boolean = true,
+  presentation: ExportPresentationOptions = DEFAULT_EXPORT_PRESENTATION,
 ): Promise<void> {
   const activeDays = excludeHiddenDays
     ? DAY_ORDER.filter((d) => !hiddenDays.includes(d))
@@ -324,7 +360,7 @@ export async function exportToXlsxBatch(
 
   for (const [roomKey, entries] of Object.entries(entriesByRoom)) {
     const sheetName = roomKey.replace(/[\\\/\?\*\[\]]/g, '_').replace(/\|/g, ' - ').substring(0, 31);
-    addSheetToWorkbook(workbook, sheetName, entries, activeDays, startMin, endMin, rowCount, theme, bandedRows);
+    addSheetToWorkbook(workbook, sheetName, entries, activeDays, startMin, endMin, rowCount, theme, bandedRows, presentation);
   }
 
   await saveWorkbook(workbook, filename, targetPath);
